@@ -1,0 +1,17 @@
+pandas
+numpy
+requests
+python-dotenv
+xgboost
+scikit-learn
+streamlit
+plotly
+matplotlib
+seaborn
+joblib
+jupyter
+selenium
+tqdm
+geopandas
+shapely
+shap
