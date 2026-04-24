@@ -1,0 +1,52 @@
+
+# .github/workflows/daily_fetch.yml
+# วาง file นี้ที่ path: .github/workflows/daily_fetch.yml ใน repo
+
+name: Daily PM2.5 Data Fetch
+
+on:
+  schedule:
+    # รันทุกวัน 00:00 UTC = 07:00 ICT (เวลาไทย)
+    - cron: "0 0 * * *"
+
+  # กดรันมือได้จาก GitHub UI ด้วย
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. โหลด code จาก repo
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # 2. ติดตั้ง Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3. ติดตั้ง dependencies
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      # 4. รัน fetch script
+      # FIRMS_API_KEY เก็บใน GitHub Secrets (Settings → Secrets → Actions)
+      - name: Fetch daily data
+        env:
+          FIRMS_API_KEY: ${{ secrets.FIRMS_API_KEY }}
+        run: python fetch_daily.py
+
+      # 5. รัน predict script
+      - name: Run predictions
+        run: python predict.py
+
+      # 6. Commit และ push ไฟล์ CSV ใหม่กลับเข้า repo
+      - name: Commit updated data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ predictions/
+          git diff --cached --quiet || git commit -m "data: auto-fetch $(date +%Y-%m-%d)"
+          git push
