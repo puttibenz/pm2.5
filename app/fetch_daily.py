@@ -12,6 +12,27 @@ import time
 
 load_dotenv()  # โหลดตัวแปรสภาพแวดล้อมจาก .env
 
+
+def _get_with_retry(
+    url: str,
+    params: dict = None,
+    timeout: int = 60,
+    retries: int = 3,
+    backoff: int = 5,
+) -> requests.Response:
+    """GET request with retry on timeout / connection errors."""
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            r.raise_for_status()
+            return r
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            if attempt == retries:
+                raise
+            wait = backoff * attempt
+            print(f"    Attempt {attempt} failed ({exc}), retrying in {wait}s...")
+            time.sleep(wait)
+
 # ── config ────────────────────────────────────────────────────
 # พิกัดเดียวกับ src/data_collection/fetch_open_meteo.py
 NORTHERN_CITIES = {
@@ -61,8 +82,7 @@ def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
         "timezone": "Asia/Bangkok",
     }
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
+    r = _get_with_retry(url, params=params)
     data = r.json()["hourly"]
 
     df = pd.DataFrame(data)
@@ -88,8 +108,7 @@ def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame
         "timezone": "Asia/Bangkok",
     }
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
+    r = _get_with_retry(url, params=params)
     data = r.json()["hourly"]
 
     df = pd.DataFrame({"Datetime": data["time"], "PM25": data["pm2_5"]})
@@ -133,18 +152,19 @@ def fetch_firms(days_back: int = 3) -> pd.DataFrame:
         f"/{days_back}"           # ย้อนหลังกี่วัน
     )
 
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
+    r = _get_with_retry(url, timeout=60)
 
     from io import StringIO
     df = pd.read_csv(StringIO(r.text))
     df["acq_date"] = pd.to_datetime(df["acq_date"])
 
     # clean เหมือนขั้นตอนก่อนหน้า
-    df = df[
-        (df["confidence"] != "l") &
-        (df["type"] == 0)
-    ].copy()
+    mask = df["confidence"] != "l"
+    if "type" in df.columns:
+        mask = mask & (df["type"] == 0)
+    else:
+        print("  WARNING: 'type' column missing from FIRMS response, skipping type filter")
+    df = df[mask].copy()
 
     print(f"  FIRMS: {len(df)} hotspots (last {days_back} days)")
     return df
