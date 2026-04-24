@@ -36,11 +36,11 @@ jobs:
       - name: Fetch daily data
         env:
           FIRMS_API_KEY: ${{ secrets.FIRMS_API_KEY }}
-        run: python fetch_daily.py
+        run: python app/fetch_daily.py
 
       # 5. รัน predict script
       - name: Run predictions
-        run: python predict.py
+        run: python app/predict.py
 
       # 6. Commit และ push ไฟล์ CSV ใหม่กลับเข้า repo
       - name: Commit updated data
