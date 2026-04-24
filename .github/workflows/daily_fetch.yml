@@ -34,10 +34,10 @@ jobs:
           pip install -r requirements.txt
 
       # 4. รัน fetch script
-      # FIRMS_API_KEY เก็บใน GitHub Secrets (Settings → Secrets → Actions)
+      # MAP_KEY เก็บใน GitHub Secrets (Settings → Secrets → Actions)
       - name: Fetch daily data
         env:
-          MAP_KEY: ${{ secrets.FIRMS_API_KEY }}
+          MAP_KEY: ${{ secrets.MAP_KEY }}
         run: python app/fetch_daily.py
 
       # 5. รัน predict script
