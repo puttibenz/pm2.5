@@ -12,6 +12,9 @@ on:
   # กดรันมือได้จาก GitHub UI ด้วย
   workflow_dispatch:
 
+permissions:
+  contents: write    
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -52,3 +55,4 @@ jobs:
           git add data/ predictions/
           git diff --cached --quiet || git commit -m "data: auto-fetch $(date +%Y-%m-%d)"
           git push
+      
