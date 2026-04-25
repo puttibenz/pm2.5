@@ -221,16 +221,13 @@ def run_predict(df: pd.DataFrame, model, scaler, feature_list: list) -> pd.DataF
         print(f"  WARN: NaN ใน {bad_provs} — ข้ามจังหวัดเหล่านี้")
         latest = latest[~nan_mask].copy()
         X      = X[~nan_mask].copy()
-        
-    # Scale (transform)
-    X_scaled = scaler.transform(X)
 
-    # Predict ทีละ horizon
+    # Predict ทีละ horizon (XGBoost train บน raw features ไม่ได้ scale)
     results = latest[["Province", "Datetime"]].copy()
     results.rename(columns={'Datetime': 'predict_datetime'}, inplace=True)
 
     for horizon in [1, 3, 6, 12, 24, 48, 72]:
-        results[f'pred_{horizon}h'] = model.predict(X_scaled)
+        results[f'pred_{horizon}h'] = model.predict(X)
     
     results['created_at'] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return results
@@ -273,8 +270,8 @@ def save_dashboard_data(df: pd.DataFrame, model, scaler, feature_list: list):
             valid[f] = 0
 
     X = valid[feature_list].fillna(0)
-    X_scaled = scaler.transform(X)
-    valid['predicted'] = model.predict(X_scaled)
+    # XGBoost train บน raw features ไม่ได้ scale
+    valid['predicted'] = model.predict(X)
 
     cutoff = pd.Timestamp.now() - pd.Timedelta(days=10)
     dashboard = valid[valid['Datetime'] >= cutoff].copy()
