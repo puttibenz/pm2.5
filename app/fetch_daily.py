@@ -71,10 +71,10 @@ YESTERDAY = TODAY - timedelta(days=1)
 # 1. Open Meteo — ดึงข้อมูลอุตุนิยมวิทยา + PM2.5 ย้อนหลัง 3 วัน
 # ══════════════════════════════════════════════════════════════
 def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
-    """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน (buffer สำหรับ lag features)"""
+    """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน (forecast)"""
 
     start = (TODAY - timedelta(days=10)).isoformat()
-    end = TODAY.isoformat()
+    end = (TODAY + timedelta(days=3)).isoformat()
 
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -105,10 +105,10 @@ def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
 
 
 def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
-    """ดึง PM2.5 จาก air quality endpoint แยกต่างหาก"""
+    """ดึง PM2.5 จาก air quality endpoint (ย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน)"""
 
     start = (TODAY - timedelta(days=10)).isoformat()
-    end = TODAY.isoformat()
+    end = (TODAY + timedelta(days=3)).isoformat()
 
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {

@@ -181,6 +181,12 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         p['province_label']      = PROVINCE_LABELS.get(prov, -1)
         p['province_target_enc'] = PROVINCE_MEAN_MAP.get(prov, 0)
 
+        # ── Forward-fill PM2.5 features สำหรับ forecast period (future rows ที่ PM25 = NaN) ──
+        # ใช้ persistence assumption: ค่า lag/rolling ล่าสุดถูก carry-forward
+        pm25_feat_cols = [c for c in p.columns
+                          if ('pm25' in c.lower() or 'pm2_5' in c.lower()) and c != 'PM25']
+        p[pm25_feat_cols] = p[pm25_feat_cols].ffill()
+
         frames.append(p)
 
     return pd.concat(frames, ignore_index=True)
