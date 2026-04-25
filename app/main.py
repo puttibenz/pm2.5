@@ -12,7 +12,6 @@ from pathlib import Path
 
 from components import (
     PROVINCE_COORDS,
-    build_province_features,
     get_shap_summary_html,
     plot_72h_forecast,
     plot_feature_importance,
@@ -53,42 +52,34 @@ def load_model_artifacts():
     return model, scaler, list(model.feature_names_in_)
 
 
-@st.cache_data(show_spinner="📂 กำลังโหลดข้อมูลประวัติ...")
-def load_merged_data() -> pd.DataFrame:
-    return pd.read_csv(
-        ROOT / "data" / "processed" / "openmeteo_firms_merged.csv",
-        parse_dates=["Datetime"],
-    )
+@st.cache_data(show_spinner="📂 กำลังโหลดข้อมูล...", ttl=3600)
+def load_dashboard_data() -> pd.DataFrame:
+    """
+    อ่าน dashboard_data.csv ที่ predict.py สร้างไว้แล้ว
+    มี predicted ครบทุกแถว ไม่ต้องรัน model ซ้ำใน dashboard
+    """
+    path = ROOT / "data" / "processed" / "dashboard_data.csv"
+    if not path.exists():
+        st.error(
+            "⚠️ ยังไม่มีไฟล์ `dashboard_data.csv`\n\n"
+            "รัน `python app/predict.py` ก่อนเพื่อสร้างข้อมูลพยากรณ์"
+        )
+        st.stop()
+    return pd.read_csv(path, parse_dates=["Datetime"])
 
 
-@st.cache_data(show_spinner="🛰️ กำลังโหลดข้อมูล FIRMS...")
+@st.cache_data(show_spinner="🛰️ กำลังโหลดข้อมูล FIRMS...", ttl=3600)
 def load_firms_data() -> pd.DataFrame:
-    df = pd.read_csv(ROOT / "data" / "raw" / "firms_north2023-2025_viirs.csv")
+    """
+    อ่าน firms_recent_hotspots.csv ที่ fetch_daily.py สร้างไว้
+    ย้อนหลัง 7 วัน overwrite ทุกวัน
+    """
+    path = ROOT / "data" / "processed" / "firms_recent_hotspots.csv"
+    if not path.exists():
+        return pd.DataFrame(columns=["acq_date", "latitude", "longitude", "frp"])
+    df = pd.read_csv(path)
     df["acq_date"] = pd.to_datetime(df["acq_date"])
     return df
-
-
-@st.cache_data(show_spinner="🔮 กำลังพยากรณ์...", ttl=3600)
-def get_province_predictions(province: str) -> pd.DataFrame:
-    """Build feature matrix + run model predictions for one province (cached 1 h)."""
-    merged = load_merged_data()
-    model, _, feature_names = load_model_artifacts()
-
-    pte     = merged.groupby("Province")["PM25"].mean().to_dict()
-    prov_df = merged[merged["Province"] == province].copy()
-    feat_df = build_province_features(prov_df, province, pte)
-
-    X = feat_df[feature_names].fillna(0)
-    feat_df = feat_df.copy()
-    feat_df["predicted"] = model.predict(X)
-
-    keep = list(dict.fromkeys(
-        ["Datetime", "Province", "PM25", "predicted",
-         "wind_direction_10m", "temperature_2m", "relative_humidity_2m",
-         "hotspot_count", "frp_sum"]
-        + feature_names
-    ))
-    return feat_df[[c for c in keep if c in feat_df.columns]]
 
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -112,11 +103,13 @@ with st.sidebar:
     st.caption("อัปเดตอัตโนมัติทุกวัน เวลา 07:00 ICT")
 
 # ─── Load Data ────────────────────────────────────────────────────────────────
-model, scaler, feature_names = load_model_artifacts()
-
-with st.spinner(f"🔮 พยากรณ์ {province}..."):
-    prov_data = get_province_predictions(province)
-
+all_data  = load_dashboard_data()
+prov_data = (
+    all_data[all_data["Province"] == province]
+    .sort_values("Datetime")
+    .copy()
+    .reset_index(drop=True)
+)
 firms = load_firms_data()
 
 # Derived values for KPI cards
@@ -323,11 +316,15 @@ with tab4:
         "**สีแดง** = ทำให้ค่าฝุ่นสูงขึ้น  |  **สีเขียว** = ทำให้ค่าฝุ่นลดลง"
     )
 
-    X_latest = prov_data[feature_names].fillna(0)
+    # โหลด model เฉพาะ Tab นี้ (lazy — ไม่กระทบ tab อื่น)
+    model, scaler, feature_names = load_model_artifacts()
+
+    available_features = [f for f in feature_names if f in prov_data.columns]
+    X_latest = prov_data[available_features].fillna(0)
     pm25_latest_pred = float(prov_data["predicted"].iloc[-1])
 
     # Insight summary sentence
-    summary_html = get_shap_summary_html(model, X_latest, feature_names, pm25_latest_pred)
+    summary_html = get_shap_summary_html(model, X_latest, available_features, pm25_latest_pred)
     if summary_html:
         st.markdown(
             f"<div style='background:#1a237e2a;border-left:4px solid #42a5f5;"
@@ -340,7 +337,7 @@ with tab4:
     with col_wf:
         st.markdown("#### ⚡ SHAP Waterfall — การพยากรณ์ล่าสุด")
         with st.spinner("คำนวณ SHAP values..."):
-            wf_fig = plot_shap_waterfall(model, X_latest, feature_names)
+            wf_fig = plot_shap_waterfall(model, X_latest, available_features)
         if wf_fig:
             st.plotly_chart(wf_fig, use_container_width=True)
         else:
@@ -352,7 +349,7 @@ with tab4:
     with col_imp:
         st.markdown("#### 📊 Feature Importance รวม (XGBoost Gain)")
         st.plotly_chart(
-            plot_feature_importance(model, feature_names),
+            plot_feature_importance(model, available_features),
             use_container_width=True,
         )
 

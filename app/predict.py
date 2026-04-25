@@ -258,6 +258,40 @@ def save_predictions(results: pd.DataFrame):
     history.to_csv(history_path, index=False)
     print(f"  Saved → {history_path} ({len(history)} rows total)")
 
+
+def save_dashboard_data(df: pd.DataFrame, model, scaler, feature_list: list):
+    """
+    สร้าง pre-computed file ให้ Streamlit อ่านโดยตรง
+    - ทุกแถวมี predicted แล้ว (ไม่ต้องโหลด model ใน dashboard)
+    - เก็บแค่ 10 วันล่าสุด (rolling_168h ต้องการ 7 วัน + buffer)
+    - บันทึกที่ data/processed/dashboard_data.csv
+    """
+    valid = df.dropna(subset=['pm25_lag_72h']).copy()
+
+    for f in feature_list:
+        if f not in valid.columns:
+            valid[f] = 0
+
+    X = valid[feature_list].fillna(0)
+    X_scaled = scaler.transform(X)
+    valid['predicted'] = model.predict(X_scaled)
+
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=10)
+    dashboard = valid[valid['Datetime'] >= cutoff].copy()
+
+    base_cols = [
+        'Datetime', 'Province', 'PM25', 'predicted',
+        'temperature_2m', 'relative_humidity_2m', 'precipitation',
+        'surface_pressure', 'wind_speed_10m', 'wind_direction_10m',
+        'hotspot_count', 'frp_sum', 'frp_mean',
+    ]
+    feat_cols = [f for f in feature_list if f not in base_cols]
+    save_cols = [c for c in base_cols + feat_cols if c in dashboard.columns]
+
+    out_path = DATA_DIR / 'processed' / 'dashboard_data.csv'
+    dashboard[save_cols].to_csv(out_path, index=False)
+    print(f"  Saved → dashboard_data.csv  ({len(dashboard):,} rows × {len(save_cols)} cols)")
+
 # ── Main ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Running predict pipeline...")
@@ -277,6 +311,9 @@ if __name__ == "__main__":
 
     print("\n5. Saving predictions...")
     save_predictions(results)
+
+    print("\n6. Saving dashboard data...")
+    save_dashboard_data(df, model, scaler, feature_list)
 
     print("\nResult preview:")
     print(results[["Province", "pred_24h", "pred_48h", "pred_72h"]].to_string(index=False))

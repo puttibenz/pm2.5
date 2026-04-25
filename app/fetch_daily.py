@@ -298,9 +298,16 @@ if __name__ == "__main__":
         date_col="Datetime"
     )
 
-    # FIRMS
+    # FIRMS — ดึง 7 วัน เพื่อให้แผนที่ใน dashboard มีข้อมูลเพียงพอ
     print("\nNASA FIRMS:")
-    firms_raw = fetch_firms(days_back=3)
+    firms_raw = fetch_firms(days_back=7)
+
+    # บันทึก raw hotspots สำหรับแผนที่ใน Streamlit (overwrite ทุกวัน)
+    hotspot_path = PROCESSED_DATA_DIR / "firms_recent_hotspots.csv"
+    firms_raw.to_csv(hotspot_path, index=False)
+    print(f"  Saved → firms_recent_hotspots.csv  ({len(firms_raw):,} rows)")
+
+    # aggregate สำหรับ predict.py ใช้ต่อ
     firms_df = aggregate_firms_daily(firms_raw)
     append_to_master(
         firms_df,
