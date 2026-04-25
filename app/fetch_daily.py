@@ -71,9 +71,9 @@ YESTERDAY = TODAY - timedelta(days=1)
 # 1. Open Meteo — ดึงข้อมูลอุตุนิยมวิทยา + PM2.5 ย้อนหลัง 3 วัน
 # ══════════════════════════════════════════════════════════════
 def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
-    """ดึงข้อมูลรายชั่วโมงย้อนหลัง 3 วัน (buffer สำหรับ lag features)"""
+    """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน (buffer สำหรับ lag features)"""
 
-    start = (TODAY - timedelta(days=3)).isoformat()
+    start = (TODAY - timedelta(days=10)).isoformat()
     end = TODAY.isoformat()
 
     url = "https://api.open-meteo.com/v1/forecast"
@@ -107,7 +107,7 @@ def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
 def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
     """ดึง PM2.5 จาก air quality endpoint แยกต่างหาก"""
 
-    start = (TODAY - timedelta(days=3)).isoformat()
+    start = (TODAY - timedelta(days=10)).isoformat()
     end = TODAY.isoformat()
 
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -300,19 +300,29 @@ if __name__ == "__main__":
 
     # FIRMS — ดึง 7 วัน เพื่อให้แผนที่ใน dashboard มีข้อมูลเพียงพอ
     print("\nNASA FIRMS:")
-    firms_raw = fetch_firms(days_back=7)
+    try:
+        firms_raw = fetch_firms(days_back=7)
 
-    # บันทึก raw hotspots สำหรับแผนที่ใน Streamlit (overwrite ทุกวัน)
-    hotspot_path = PROCESSED_DATA_DIR / "firms_recent_hotspots.csv"
-    firms_raw.to_csv(hotspot_path, index=False)
-    print(f"  Saved → firms_recent_hotspots.csv  ({len(firms_raw):,} rows)")
+        # บันทึก raw hotspots สำหรับแผนที่ใน Streamlit (overwrite ทุกวัน)
+        hotspot_path = PROCESSED_DATA_DIR / "firms_recent_hotspots.csv"
+        firms_raw.to_csv(hotspot_path, index=False)
+        print(f"  Saved → firms_recent_hotspots.csv  ({len(firms_raw):,} rows)")
 
-    # aggregate สำหรับ predict.py ใช้ต่อ
-    firms_df = aggregate_firms_daily(firms_raw)
-    append_to_master(
-        firms_df,
-        PROCESSED_DATA_DIR / "firms_daily_by_province.csv",
-        date_col="date"
-    )
+        # aggregate สำหรับ predict.py ใช้ต่อ
+        firms_df = aggregate_firms_daily(firms_raw)
+        append_to_master(
+            firms_df,
+            PROCESSED_DATA_DIR / "firms_daily_by_province.csv",
+            date_col="date"
+        )
+    except Exception as e:
+        print(f"  WARNING: FIRMS fetch ล้มเหลว ({e})")
+        print("  ข้ามขั้นตอน FIRMS — predict.py จะใช้ hotspot=0 แทน")
+        # สร้าง empty file เพื่อให้ dashboard ไม่ crash
+        hotspot_path = PROCESSED_DATA_DIR / "firms_recent_hotspots.csv"
+        if not hotspot_path.exists():
+            pd.DataFrame(columns=["acq_date", "latitude", "longitude", "frp",
+                                   "confidence", "type"]).to_csv(hotspot_path, index=False)
+            print("  Created empty firms_recent_hotspots.csv")
 
     print("\nDone.")
