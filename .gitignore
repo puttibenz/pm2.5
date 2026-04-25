@@ -3,8 +3,9 @@ v/
 venv/
 env/
 
-# Data
-data/
+# Data – ignore raw source files only (large, historical)
+# data/processed/ and predictions/ are committed by CI
+data/raw/
 
 # Environment variables
 .env
