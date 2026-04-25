@@ -210,12 +210,12 @@ def save_predictions(results: pd.DataFrame):
     # history (append)
     history_path = OUTPUT_DIR / "predictions_history.csv"
     if history_path.exists():
-        hisotory = pd.read_csv(history_path)
-        history = pd.concat([hisotory, results], ignore_index=True)
+        history = pd.read_csv(history_path)
+        history = pd.concat([history, results], ignore_index=True)
     else:
-        hisotory = results
-    hisotory.to_csv(history_path, index=False)
-    print(f"  Saved → {history_path} ({len(hisotory)} rows total)")
+        history = results
+    history.to_csv(history_path, index=False)
+    print(f"  Saved → {history_path} ({len(history)} rows total)")
 
 # Main
 if __name__ == "__main__":
