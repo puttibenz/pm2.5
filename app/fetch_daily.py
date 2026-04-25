@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 import time
+import geopandas as gpd
+from shapely.geometry import Point
 
 load_dotenv()  # โหลดตัวแปรสภาพแวดล้อมจาก .env
 
@@ -49,8 +51,18 @@ NORTHERN_CITIES = {
 FIRMS_API_KEY = os.getenv("MAP_KEY")  
 
 PROJECT_ROOT = Path(__file__).parent
+REPO_ROOT = Path(__file__).parent.parent
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DATA_DIR = REPO_ROOT / "data" / "processed"
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+SHP_PATH = REPO_ROOT / "notebooks" / "gadm_thailand" / "gadm41_THA_1.shp"
+
+TARGET_PROVINCES = [
+    "Chiang Mai", "Chiang Rai", "Lampang", "Lamphun",
+    "Mae Hong Son", "Nan", "Phayao", "Phrae",
+]
 
 TODAY = datetime.utcnow().date()
 YESTERDAY = TODAY - timedelta(days=1)
@@ -170,6 +182,69 @@ def fetch_firms(days_back: int = 3) -> pd.DataFrame:
     return df
 
 
+def aggregate_firms_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Spatial join lat/lon → จังหวัด แล้ว aggregate เป็น daily × Province
+    คืนค่า DataFrame ที่มีคอลัมน์: date, Province, hotspot_count, frp_sum, frp_mean
+    """
+    # โหลด shapefile ภาคเหนือ 8 จังหวัด
+    thailand = gpd.read_file(SHP_PATH)
+    north = thailand[thailand["NAME_1"].isin(TARGET_PROVINCES)].copy()
+    north["Province"] = north["NAME_1"]
+    north = north.to_crs("EPSG:4326")
+
+    # แปลง FIRMS เป็น GeoDataFrame
+    geometry = [Point(xy) for xy in zip(df["longitude"], df["latitude"])]
+    firms_geo = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
+
+    # Point-in-polygon join
+    joined = gpd.sjoin(
+        firms_geo,
+        north[["Province", "geometry"]],
+        how="left",
+        predicate="within",
+    )
+
+    outside = joined["Province"].isna().sum()
+    print(f"  Points outside all provinces: {outside:,} ({outside/len(joined)*100:.1f}%)")
+
+    joined = joined.dropna(subset=["Province"])
+    print(f"  Points matched to province: {len(joined):,}")
+
+    # Aggregate รายวัน × จังหวัด
+    joined["acq_date"] = pd.to_datetime(joined["acq_date"])
+    hotspot_daily = (
+        joined
+        .groupby(["acq_date", "Province"])
+        .agg(
+            hotspot_count=("frp", "count"),
+            frp_sum=("frp", "sum"),
+            frp_mean=("frp", "mean"),
+        )
+        .reset_index()
+        .rename(columns={"acq_date": "date"})
+    )
+
+    # Fill zero-fire days
+    all_dates = pd.date_range(
+        start=joined["acq_date"].min(),
+        end=joined["acq_date"].max(),
+        freq="D",
+    )
+    full_grid = pd.MultiIndex.from_product(
+        [all_dates, TARGET_PROVINCES],
+        names=["date", "Province"],
+    ).to_frame(index=False)
+
+    hotspot_daily = full_grid.merge(hotspot_daily, on=["date", "Province"], how="left")
+    hotspot_daily[["hotspot_count", "frp_sum", "frp_mean"]] = (
+        hotspot_daily[["hotspot_count", "frp_sum", "frp_mean"]].fillna(0)
+    )
+
+    print(f"  FIRMS daily shape: {hotspot_daily.shape}")
+    return hotspot_daily
+
+
 # ══════════════════════════════════════════════════════════════
 # 3. Append to master CSV (ไม่ overwrite ข้อมูลเก่า)
 # ══════════════════════════════════════════════════════════════
@@ -215,11 +290,12 @@ if __name__ == "__main__":
 
     # FIRMS
     print("\nNASA FIRMS:")
-    firms_df = fetch_firms(days_back=3)
+    firms_raw = fetch_firms(days_back=3)
+    firms_df = aggregate_firms_daily(firms_raw)
     append_to_master(
         firms_df,
-        RAW_DATA_DIR / "firms_north_viirs.csv",
-        date_col="acq_date"
+        PROCESSED_DATA_DIR / "firms_daily_by_province.csv",
+        date_col="date"
     )
 
     print("\nDone.")
