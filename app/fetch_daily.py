@@ -18,11 +18,11 @@ load_dotenv()  # โหลดตัวแปรสภาพแวดล้อม
 def _get_with_retry(
     url: str,
     params: dict = None,
-    timeout: int = 60,
-    retries: int = 3,
-    backoff: int = 5,
+    timeout: int = 120,
+    retries: int = 5,
+    backoff: float = 5.0,
 ) -> requests.Response:
-    """GET request with retry on timeout / connection errors."""
+    """GET request with retry on timeout / connection errors (exponential backoff)."""
     for attempt in range(1, retries + 1):
         try:
             r = requests.get(url, params=params, timeout=timeout)
@@ -31,8 +31,8 @@ def _get_with_retry(
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
             if attempt == retries:
                 raise
-            wait = backoff * attempt
-            print(f"    Attempt {attempt} failed ({exc}), retrying in {wait}s...")
+            wait = backoff * (2 ** (attempt - 1))  # 5, 10, 20, 40 …
+            print(f"    Attempt {attempt} failed ({exc}), retrying in {wait:.0f}s...")
             time.sleep(wait)
 
 # ── config ────────────────────────────────────────────────────
@@ -132,6 +132,7 @@ def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame
 def fetch_all_meteo() -> pd.DataFrame:
     """รวบรวมข้อมูลทุกจังหวัด"""
     meteo_frames = []
+    failed = []
 
     for province, coords in NORTHERN_CITIES.items():
         print(f"  Fetching meteo: {province}...")
@@ -144,6 +145,15 @@ def fetch_all_meteo() -> pd.DataFrame:
             time.sleep(0.5)  # rate limit
         except Exception as e:
             print(f"  ERROR {province}: {e}")
+            failed.append(province)
+
+    if not meteo_frames:
+        raise RuntimeError(
+            f"fetch_all_meteo: ทุกจังหวัดล้มเหลว ({', '.join(failed)}). "
+            "ตรวจสอบ network / API endpoint แล้วลองใหม่"
+        )
+    if failed:
+        print(f"  WARNING: ข้อมูลไม่ครบ — ขาดจังหวัด: {', '.join(failed)}")
 
     return pd.concat(meteo_frames, ignore_index=True)
 
