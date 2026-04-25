@@ -170,7 +170,7 @@ def fetch_firms(days_back: int = 3) -> pd.DataFrame:
     url = (
         f"https://firms.modaps.eosdis.nasa.gov/api/area/csv"
         f"/{FIRMS_API_KEY}/VIIRS_SNPP_NRT"
-        f"/97.3,17.5,101.5,20.5"  # west,south,east,north (ครอบภาคเหนือ)
+        f"/97.3,17.5,102.5,20.5"  # west,south,east,north (ครอบภาคเหนือ)
         f"/{days_back}"           # ย้อนหลังกี่วัน
     )
 
@@ -298,10 +298,10 @@ if __name__ == "__main__":
         date_col="Datetime"
     )
 
-    # FIRMS — ดึง 7 วัน เพื่อให้แผนที่ใน dashboard มีข้อมูลเพียงพอ
+    # FIRMS — ดึง 5 วัน (max ที่ FIRMS API รองรับ: 1-5) เพื่อให้แผนที่ใน dashboard มีข้อมูล
     print("\nNASA FIRMS:")
     try:
-        firms_raw = fetch_firms(days_back=7)
+        firms_raw = fetch_firms(days_back=5)
 
         # บันทึก raw hotspots สำหรับแผนที่ใน Streamlit (overwrite ทุกวัน)
         hotspot_path = PROCESSED_DATA_DIR / "firms_recent_hotspots.csv"
