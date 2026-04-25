@@ -11,13 +11,14 @@ from datetime import datetime, timedelta
 
 # Config
 
-ARTIFACT_DIR = Path('artifacts')
-DATA_DIR = Path('data')
-OUTPUT_DIR = Path('predictions')
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ARTIFACT_DIR = REPO_ROOT / 'artifacts'
+DATA_DIR = REPO_ROOT / 'data'
+OUTPUT_DIR = REPO_ROOT / 'predictions'
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 PROVINCES = [
-    'Chiang Mai', 'Chiang Rai', 'Lampang', 'Lanphun',
+    'Chiang Mai', 'Chiang Rai', 'Lampang', 'Lamphun',
     'Mae Hong Son', 'Nan', 'Phayao', 'Phrae'
 ]
 
@@ -40,7 +41,8 @@ def load_artifacts():
 
     model = joblib.load(ARTIFACT_DIR / 'xgboost_pm25.pkl')
     scaler = joblib.load(ARTIFACT_DIR / 'scaler.pkl')
-    feature_list = json.load(open(ARTIFACT_DIR / 'feature_list.json'))
+    with open(ARTIFACT_DIR / 'feature_list.json', encoding='utf-8') as f:
+        feature_list = json.load(f)
     return model, scaler, feature_list
 
 # Load Data
@@ -51,33 +53,38 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     cutoff = pd.Timestamp.now() - pd.Timedelta(days=5)
 
-    # Open mateo
-    meteo_path = DATA_DIR / "openmeteo_all_provinces.csv"
-    if not meteo_path.exists():
-        # fallback: ใช้ไฟล์ต้นฉบับที่ผู้ใช้อัปโหลด
-        meteo_path = Path("openmeteo_all_provinces_2023-.csv")
+    meteo_candidates = [
+        DATA_DIR / "raw" / "openmeteo_all_provinces.csv",
+        DATA_DIR / "raw" / "openmeteo_all_provinces_2023-.csv",
+        REPO_ROOT / "openmeteo_all_provinces_2023-.csv",
+    ]
+    meteo_path = next((path for path in meteo_candidates if path.exists()), None)
+    if meteo_path is None:
+        raise FileNotFoundError("ไม่พบไฟล์ meteo ที่ต้องใช้สำหรับ predict")
 
-        meteo = pd.read_csv(meteo_path, parse_dates=['Datetime'])
-        meteo = meteo[meteo['Datetime'] >= cutoff].copy()
-        meteo = meteo.sort_values(['Province', 'Datetime']).reset_index(drop=True)
-        print(f"  Meteo rows (5d): {len(meteo):,}")
+    meteo = pd.read_csv(meteo_path, parse_dates=['Datetime'])
+    meteo = meteo[meteo['Datetime'] >= cutoff].copy()
+    meteo = meteo.sort_values(['Province', 'Datetime']).reset_index(drop=True)
+    print(f"  Meteo rows (5d): {len(meteo):,}")
 
-        # FIRMS hotspot (aggregate เป็นรายวัน)
-        hotspot_path = DATA_DIR / "firms_north_viirs.csv"
-        if hotspot_path.exists():
-            hotspot = pd.read_csv(hotspot_path, parse_dates=['date'])
-            hotspot = hotspot[hotspot['date'] >= cutoff.normalize()].copy()
-        else:
-            # ถ้ายังไม่มีไฟล์ hotspot ให้ใช้ค่า 0 แทน (graceful fallback)
-            print("  WARN: ไม่พบ firms_daily_by_province.csv — ใช้ hotspot=0")
-            dates = pd.date_range(cutoff.date(), pd.Timestamp.now().date(), freq='D')
-            hotspot = pd.MultiIndex.from_product(
-                [dates, PROVINCES], names=['date', 'Province']
-            ).to_frame(index=False)
-            hotspot[["hotspot_count", "frp_sum", "frp_mean"]] = 0
+    hotspot_candidates = [
+        DATA_DIR / "processed" / "firms_daily_by_province.csv",
+        DATA_DIR / "raw" / "firms_north_viirs.csv",
+    ]
+    hotspot_path = next((path for path in hotspot_candidates if path.exists()), None)
+    if hotspot_path is not None:
+        hotspot = pd.read_csv(hotspot_path, parse_dates=['date'])
+        hotspot = hotspot[hotspot['date'] >= cutoff.normalize()].copy()
+    else:
+        print("  WARN: ไม่พบ firms_daily_by_province.csv — ใช้ hotspot=0")
+        dates = pd.date_range(cutoff.date(), pd.Timestamp.now().date(), freq='D')
+        hotspot = pd.MultiIndex.from_product(
+            [dates, PROVINCES], names=['date', 'Province']
+        ).to_frame(index=False)
+        hotspot[["hotspot_count", "frp_sum", "frp_mean"]] = 0
 
-            print(f'Hotspot rows (5d): {len(hotspot):,}')
-            return meteo, hotspot
+    print(f'Hotspot rows (5d): {len(hotspot):,}')
+    return meteo, hotspot
         
 # Feature Engineering
 def build_features(meteo: pd.DataFrame, hotspot: pd.DataFrame) -> pd.DataFrame:

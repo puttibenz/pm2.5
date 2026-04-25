@@ -50,9 +50,9 @@ NORTHERN_CITIES = {
 
 FIRMS_API_KEY = os.getenv("MAP_KEY")  
 
-PROJECT_ROOT = Path(__file__).parent
-REPO_ROOT = Path(__file__).parent.parent
-RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
+APP_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = APP_ROOT.parent
+RAW_DATA_DIR = REPO_ROOT / "data" / "raw"
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DATA_DIR = REPO_ROOT / "data" / "processed"
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -284,7 +284,7 @@ if __name__ == "__main__":
     meteo_df = fetch_all_meteo()
     append_to_master(
         meteo_df,
-        RAW_DATA_DIR / "openmeteo_all_provinces-.csv",
+        RAW_DATA_DIR / "openmeteo_all_provinces.csv",
         date_col="Datetime"
     )
 
