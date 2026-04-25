@@ -3,18 +3,18 @@
 # ═══════════════════════════════════════════════════════════════
 
 import joblib
-import json 
+import json
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Config
+# ── Config ────────────────────────────────────────────────────
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT    = Path(__file__).resolve().parent.parent
 ARTIFACT_DIR = REPO_ROOT / 'artifacts'
-DATA_DIR = REPO_ROOT / 'data'
-OUTPUT_DIR = REPO_ROOT / 'predictions'
+DATA_DIR     = REPO_ROOT / 'data'
+OUTPUT_DIR   = REPO_ROOT / 'predictions'
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 PROVINCES = [
@@ -22,10 +22,28 @@ PROVINCES = [
     'Mae Hong Son', 'Nan', 'Phayao', 'Phrae'
 ]
 
-METO_COLS = [
-    "temperature_2m", "relative_humidity_2m", "precipitation",
-    "surface_pressure", "wind_speed_10m", "wind_direction_10m"
-]
+# ── Feature constants (ตรงกับ modeling.ipynb) ─────────────────
+LAG_HOURS = [1, 2, 3, 6, 12, 24, 48, 72]
+FIRE_LAGS = [24, 48, 72]
+WINDOWS   = [3, 6, 12, 24, 48, 168]
+
+# Province label encoding (LabelEncoder เรียงตามตัวอักษร จาก modeling.ipynb)
+PROVINCE_LABELS = {
+    'Chiang Mai': 0, 'Chiang Rai': 1, 'Lampang': 2, 'Lamphun': 3,
+    'Mae Hong Son': 4, 'Nan': 5, 'Phayao': 6, 'Phrae': 7,
+}
+
+# Province target encoding (mean PM2.5 จาก train set ใน modeling.ipynb)
+PROVINCE_MEAN_MAP = {
+    'Chiang Mai':   21.587774223034735,
+    'Chiang Rai':   19.978260207190736,
+    'Lampang':      18.251279707495428,
+    'Lamphun':      17.79868982327849,
+    'Mae Hong Son': 12.911837294332724,
+    'Nan':          18.212416209628277,
+    'Phayao':       17.143692870201097,
+    'Phrae':        17.761144119439365,
+}
 
 # Load Artifacts
 def load_artifacts():
@@ -45,13 +63,13 @@ def load_artifacts():
         feature_list = json.load(f)
     return model, scaler, feature_list
 
-# Load Data
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+# ── Load Data ─────────────────────────────────────────────────
+def load_data() -> pd.DataFrame:
     """
-    โหลด meteo และ hotspot
-    ดึงย้อนหลัง 5 วัน เผื่อ lag_72h ครบ + buffer
+    โหลด meteo + hotspot แล้ว merge กัน
+    ดึงย้อนหลัง 10 วัน เพื่อให้ rolling_168h (7 วัน) มีข้อมูลครบ
     """
-    cutoff = pd.Timestamp.now() - pd.Timedelta(days=5)
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=10)
 
     meteo_candidates = [
         DATA_DIR / "raw" / "openmeteo_all_provinces.csv",
@@ -65,7 +83,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     meteo = pd.read_csv(meteo_path, parse_dates=['Datetime'])
     meteo = meteo[meteo['Datetime'] >= cutoff].copy()
     meteo = meteo.sort_values(['Province', 'Datetime']).reset_index(drop=True)
-    print(f"  Meteo rows (5d): {len(meteo):,}")
+    print(f"  Meteo rows (10d): {len(meteo):,}")
 
     hotspot_candidates = [
         DATA_DIR / "processed" / "firms_daily_by_province.csv",
@@ -83,59 +101,88 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         ).to_frame(index=False)
         hotspot[["hotspot_count", "frp_sum", "frp_mean"]] = 0
 
-    print(f'Hotspot rows (5d): {len(hotspot):,}')
-    return meteo, hotspot
-        
-# Feature Engineering
-def build_features(meteo: pd.DataFrame, hotspot: pd.DataFrame) -> pd.DataFrame:
-    """สร้าง features เหมือน merge_and_features.py ทุกอย่าง"""
- 
-    # merge hotspot รายวัน เข้า meteo รายชั่วโมง
+    print(f"  Hotspot rows (10d): {len(hotspot):,}")
+
+    # Merge hotspot (daily) เข้า meteo (hourly)
     meteo["date"] = meteo["Datetime"].dt.normalize()
     df = meteo.merge(hotspot, on=["date", "Province"], how="left")
-    df[["hotspot_count", "frp_sum", "frp_mean"]] = (
-        df[["hotspot_count", "frp_sum", "frp_mean"]].fillna(0)
-    )
- 
+    df[["hotspot_count", "frp_sum", "frp_mean"]] = df[["hotspot_count", "frp_sum", "frp_mean"]].fillna(0)
+    return df
+
+
+# ── Feature Engineering ───────────────────────────────────────
+def build_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    สร้าง features ตรงกับ modeling.ipynb ทุกอย่าง
+    """
     frames = []
+
     for prov in PROVINCES:
-        p = df[df["Province"] == prov].copy().sort_values("Datetime")
- 
-        # lag PM25
-        for h in [1, 3, 6, 12, 24, 48, 72]:
-            p[f"pm25_lag_{h}h"] = p["PM25"].shift(h)
- 
-        # rolling PM25
-        for window in [6, 12, 24, 72]:
-            p[f"pm25_roll_mean_{window}h"] = p["PM25"].shift(1).rolling(window).mean()
-            p[f"pm25_roll_max_{window}h"]  = p["PM25"].shift(1).rolling(window).max()
- 
-        # rolling hotspot
-        p["hotspot_roll3d"] = p["hotspot_count"].shift(24).rolling(24 * 3).mean()
-        p["hotspot_roll7d"] = p["hotspot_count"].shift(24).rolling(24 * 7).mean()
-        p["frp_roll3d"]     = p["frp_sum"].shift(24).rolling(24 * 3).mean()
- 
-        # wind direction → sin/cos (circular encoding)
-        wd_rad        = np.deg2rad(p["wind_direction_10m"])
-        p["wind_sin"] = np.sin(wd_rad)
-        p["wind_cos"] = np.cos(wd_rad)
- 
-        # time features
-        p["hour"]      = p["Datetime"].dt.hour
-        p["month"]     = p["Datetime"].dt.month
-        p["dayofweek"] = p["Datetime"].dt.dayofweek
-        p["dayofyear"] = p["Datetime"].dt.dayofyear
- 
-        # cyclical time encoding
-        p["hour_sin"]      = np.sin(2 * np.pi * p["hour"] / 24)
-        p["hour_cos"]      = np.cos(2 * np.pi * p["hour"] / 24)
-        p["month_sin"]     = np.sin(2 * np.pi * p["month"] / 12)
-        p["month_cos"]     = np.cos(2 * np.pi * p["month"] / 12)
-        p["dayofyear_sin"] = np.sin(2 * np.pi * p["dayofyear"] / 365)
-        p["dayofyear_cos"] = np.cos(2 * np.pi * p["dayofyear"] / 365)
- 
+        p = df[df["Province"] == prov].copy().sort_values("Datetime").reset_index(drop=True)
+
+        # ── Time Features ──
+        p['year']           = p['Datetime'].dt.year
+        p['month']          = p['Datetime'].dt.month
+        p['day']            = p['Datetime'].dt.day
+        p['hour']           = p['Datetime'].dt.hour
+        p['dayofyear']      = p['Datetime'].dt.dayofyear
+        p['is_haze_season'] = p['month'].isin([3, 4]).astype(int)
+        p['hour_sin']       = np.sin(2 * np.pi * p['hour']  / 24)
+        p['hour_cos']       = np.cos(2 * np.pi * p['hour']  / 24)
+        p['month_sin']      = np.sin(2 * np.pi * p['month'] / 12)
+        p['month_cos']      = np.cos(2 * np.pi * p['month'] / 12)
+        p['day_sin']        = np.sin(2 * np.pi * p['day']   / 365)
+        p['day_cos']        = np.cos(2 * np.pi * p['day']   / 365)
+        p['wind_dir_sin']   = np.sin(np.radians(p['wind_direction_10m']))
+        p['wind_dir_cos']   = np.cos(np.radians(p['wind_direction_10m']))
+
+        # ── PM2.5 Lag Features ──
+        for lag in LAG_HOURS:
+            p[f'pm25_lag_{lag}h'] = p['PM25'].shift(lag)
+
+        # ── Fire Lag Features ──
+        for lag in FIRE_LAGS:
+            p[f'hotspot_lag_{lag}h'] = p['hotspot_count'].shift(lag)
+            p[f'frp_sum_lag_{lag}h'] = p['frp_sum'].shift(lag)
+
+        # ── PM2.5 Rolling Features ──
+        for w in WINDOWS:
+            p[f'pm25_roll_mean_{w}h'] = p['PM25'].shift(1).rolling(window=w, min_periods=1).mean()
+            p[f'pm25_roll_std_{w}h']  = p['PM25'].shift(1).rolling(window=w, min_periods=1).std()
+            p[f'pm25_roll_max_{w}h']  = p['PM25'].shift(1).rolling(window=w, min_periods=1).max()
+
+        # ── Fire Rolling Features ──
+        for w in [24, 48, 168]:
+            p[f'hotspot_roll_sum_{w}h'] = p['hotspot_count'].shift(1).rolling(window=w, min_periods=1).sum()
+            p[f'frp_roll_sum_{w}h']     = p['frp_sum'].shift(1).rolling(window=w, min_periods=1).sum()
+
+        # ── Log Transforms ──
+        p['hotspot_log']       = np.log1p(p['hotspot_count'])
+        p['frp_sum_log']       = np.log1p(p['frp_sum'])
+        p['frp_mean_log']      = np.log1p(p['frp_mean'])
+        p['precipitation_log'] = np.log1p(p['precipitation'])
+
+        for lag in FIRE_LAGS:
+            p[f'hotspot_log_lag_{lag}h'] = np.log1p(p[f'hotspot_lag_{lag}h']).fillna(0)
+
+        # ── Delta Features ──
+        p['pm25_delta_1h']      = p['PM25'].diff(1).shift(1)
+        p['pm25_delta_24h']     = p['PM25'].diff(24).shift(1)
+        p['humidity_delta_1h']  = p['relative_humidity_2m'].diff(1)
+        p['humidity_delta_24h'] = p['relative_humidity_2m'].diff(24)
+
+        # ── Interaction Features ──
+        p['temp_x_humidity'] = p['temperature_2m'] * p['relative_humidity_2m'] / 100
+        p['hotspot_x_haze']  = p['hotspot_log'] * p['is_haze_season']
+        p['frp_x_haze']      = p['frp_sum_log'] * p['is_haze_season']
+        p['wind_x_hotspot']  = p['wind_speed_10m'] * p['hotspot_log']
+
+        # ── Province Encoding ──
+        p['province_label']      = PROVINCE_LABELS.get(prov, -1)
+        p['province_target_enc'] = PROVINCE_MEAN_MAP.get(prov, 0)
+
         frames.append(p)
- 
+
     return pd.concat(frames, ignore_index=True)
 
 # Predict
@@ -179,17 +226,11 @@ def run_predict(df: pd.DataFrame, model, scaler, feature_list: list) -> pd.DataF
     X_scaled = scaler.transform(X)
 
     # Predict ทีละ horizon
-    results = latest.copy()[["Province", "Datetime"]].copy()
-    results.rename(columns={'PM25': 'pm25_actual', 'Datetime': 'predict_datetime'}, inplace=True)
+    results = latest[["Province", "Datetime"]].copy()
+    results.rename(columns={'Datetime': 'predict_datetime'}, inplace=True)
 
     for horizon in [1, 3, 6, 12, 24, 48, 72]:
-        col = f'target_pm25_{horizon}h'
-        if hasattr(model, col):
-            # multi-output model
-            results[f'pred_{horizon}h'] = model.predict(X_scaled)
-        else:
-            # single-output: ใช้ model เดิม (ควร train แยกต่อ horizon)
-            results[f'pred_{horizon}h'] = model.predict(X_scaled)
+        results[f'pred_{horizon}h'] = model.predict(X_scaled)
     
     results['created_at'] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return results
@@ -217,26 +258,26 @@ def save_predictions(results: pd.DataFrame):
     history.to_csv(history_path, index=False)
     print(f"  Saved → {history_path} ({len(history)} rows total)")
 
-# Main
+# ── Main ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Running predict pipeline...")
- 
+
     print("\n1. Loading artifacts...")
     model, scaler, feature_list = load_artifacts()
- 
+
     print("\n2. Loading data...")
-    meteo, hotspot = load_data()
- 
+    df = load_data()
+
     print("\n3. Building features...")
-    df = build_features(meteo, hotspot)
+    df = build_features(df)
     print(f"  Feature rows: {len(df):,}, columns: {df.shape[1]}")
- 
+
     print("\n4. Predicting...")
     results = run_predict(df, model, scaler, feature_list)
- 
+
     print("\n5. Saving predictions...")
     save_predictions(results)
- 
+
     print("\nResult preview:")
     print(results[["Province", "pred_24h", "pred_48h", "pred_72h"]].to_string(index=False))
-    print("\nDone.")       
+    print("\nDone.")
