@@ -146,112 +146,150 @@ def build_province_features(df: pd.DataFrame, province: str,
     return d.dropna(subset=["pm25_lag_72h"]).reset_index(drop=True)
 
 
-# ─── Section 1: 72-Hour Forecast ──────────────────────────────────────────────
+# ─── Section 1: 7-Day Forecast ──────────────────────────────────────────────
 
-def plot_72h_forecast(prov_data: pd.DataFrame, province: str) -> go.Figure:
+def plot_7day_forecast(prov_data: pd.DataFrame, province: str) -> go.Figure:
     """
-    Combined chart:
-      - Blue solid line  : actual PM2.5 (last 7 days)
-      - Grey dotted line : model hindcast (last 7 days, accuracy reference)
-      - Orange line      : 72-hour forecast window
-      - Orange band      : ±12 % confidence interval
+    Ultra-polished 7-Day Forecast Chart:
+      - Smooth spline curves
+      - Clean annotations and 'Now' indicator
+      - Subtle confidence bands and grid
+      - Removed range slider for a cleaner look
     """
-    d = prov_data.sort_values("Datetime").tail(10 * 24).copy()
-    split_idx = max(0, len(d) - 72)
-    hist = d.iloc[:split_idx]
-    fore = d.iloc[split_idx:]
+    d = prov_data.sort_values("Datetime").tail(14 * 24).copy()
+    now = pd.Timestamp.now().floor('h')
+    hist = d[d["Datetime"] <= now]
+    fore = d[d["Datetime"] >= now] # Include 'now' to connect the lines
 
     fig = go.Figure()
 
-    # Alert zone backgrounds
-    for y0, y1, fc, lbl in [
-        (0,   25,  "rgba(0,230,118,0.06)",  "ดีมาก"),
-        (25,  37,  "rgba(198,255,0,0.06)",  "ดี"),
-        (37,  50,  "rgba(255,145,0,0.07)",  "ปานกลาง"),
-        (50,  90,  "rgba(255,23,68,0.07)",  "เสี่ยง"),
-        (90,  220, "rgba(213,0,249,0.07)",  "อันตราย"),
-    ]:
-        fig.add_hrect(y0=y0, y1=y1, fillcolor=fc, line_width=0)
+    # 1. Subtle Background Zones for Danger Levels
+    fig.add_hrect(y0=37.5, y1=75, fillcolor="rgba(255, 145, 0, 0.05)", line_width=0, layer="below")
+    fig.add_hrect(y0=75, y1=500, fillcolor="rgba(255, 23, 68, 0.05)", line_width=0, layer="below")
 
-    # Historical actual
+    # 2. Historical Actual (Smooth Line)
     fig.add_trace(go.Scatter(
         x=hist["Datetime"], y=hist["PM25"],
-        name="PM2.5 จริง (ย้อนหลัง)",
-        line=dict(color="#42a5f5", width=2),
+        name="อดีต (Actual)",
+        line=dict(color="#29b6f6", width=2.5, shape='spline', smoothing=0.8),
         mode="lines",
+        hovertemplate="<b>%{x|%d %b %H:%M}</b><br>PM2.5 จริง: %{y:.1f} µg/m³<extra></extra>"
     ))
 
-    # Model hindcast on historical period (accuracy reference)
-    if "predicted" in hist.columns and len(hist) > 0:
-        fig.add_trace(go.Scatter(
-            x=hist["Datetime"], y=hist["predicted"],
-            name="โมเดล (ย้อนหลัง)",
-            line=dict(color="#78909c", width=1, dash="dot"),
-            mode="lines", opacity=0.65,
-        ))
-
-    # 72-hour forecast
-    if "predicted" in fore.columns and len(fore) > 0:
-        fig.add_trace(go.Scatter(
-            x=fore["Datetime"], y=fore["predicted"],
-            name="⚡ พยากรณ์ 72h",
-            line=dict(color="#ff7043", width=2.5),
-            mode="lines+markers", marker=dict(size=3),
-        ))
-
-        # ±12 % confidence band
-        upper = fore["predicted"] * 1.12
-        lower = fore["predicted"] * 0.88
+    if not fore.empty:
+        # 3. Confidence Band (Smooth and highly transparent)
+        upper = fore["predicted"] * 1.15
+        lower = fore["predicted"] * 0.85
         fig.add_trace(go.Scatter(
             x=pd.concat([fore["Datetime"], fore["Datetime"].iloc[::-1]]),
             y=pd.concat([upper, lower.iloc[::-1]]),
-            fill="toself", fillcolor="rgba(255,112,67,0.12)",
-            line=dict(color="rgba(0,0,0,0)"),
-            name="ช่วงความเชื่อมั่น ±12%",
+            fill='toself',
+            fillcolor='rgba(255, 167, 38, 0.1)',
+            line=dict(color='rgba(255,255,255,0)', shape='spline', smoothing=0.8),
+            hoverinfo="skip",
+            showlegend=True,
+            name="ช่วงความไม่แน่นอน"
         ))
 
-    # Threshold reference lines
-    fig.add_hline(y=37, line_dash="dot", line_color="#ffd600", line_width=1.5)
-    fig.add_annotation(x=1, y=37, xref="paper", yref="y",
-                       text="เกณฑ์ปานกลาง 37", showarrow=False,
-                       font=dict(color="#ffd600", size=10), xanchor="right")
-    fig.add_hline(y=75, line_dash="dot", line_color="#ff1744", line_width=1.5)
-    fig.add_annotation(x=1, y=75, xref="paper", yref="y",
-                       text="เกณฑ์แจ้งเตือน 75", showarrow=False,
-                       font=dict(color="#ff1744", size=10), xanchor="right")
+        # 4. Forecast Line (Smooth Area)
+        fig.add_trace(go.Scatter(
+            x=fore["Datetime"], y=fore["predicted"],
+            name="พยากรณ์ (Forecast)",
+            line=dict(color="#ff7043", width=3.5, shape='spline', smoothing=0.8),
+            fill='tozeroy',
+            fillcolor='rgba(255, 112, 67, 0.08)',
+            mode="lines",
+            hovertemplate="<b>%{x|%d %b %H:%M}</b><br>พยากรณ์: %{y:.1f} µg/m³<br><extra></extra>"
+        ))
 
-    # Forecast start separator
-    if len(fore) > 0:
-        x_sep = fore["Datetime"].iloc[0].isoformat()
-        fig.add_shape(
-            type="line", x0=x_sep, x1=x_sep, y0=0, y1=1,
-            xref="x", yref="paper",
-            line=dict(color="#90a4ae", dash="dash", width=1.5),
-        )
+        # 5. Highlight Peak Point with a nice annotation
+        peak_idx = fore["predicted"].idxmax()
+        peak_row = fore.loc[peak_idx]
         fig.add_annotation(
-            x=x_sep, y=1, xref="x", yref="paper",
-            text="▶ เริ่มพยากรณ์", showarrow=False,
-            font=dict(color="#90a4ae", size=10),
-            xanchor="left", yanchor="top",
+            x=peak_row["Datetime"],
+            y=peak_row["predicted"],
+            text=f"สูงสุด {peak_row['predicted']:.0f} µg/m³",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=2,
+            arrowcolor="#d500f9",
+            ax=0,
+            ay=-40,
+            font=dict(color="#d500f9", size=12),
+            bgcolor="rgba(213, 0, 249, 0.1)",
+            bordercolor="#d500f9",
+            borderwidth=1,
+            borderpad=4,
+            opacity=0.9
         )
 
-    y_max = min(220, float(prov_data["PM25"].quantile(0.995)) * 1.2)
+    # 6. 'Now' Vertical Line (Using Shapes and Annotations directly to avoid library version conflicts)
+    fig.add_shape(
+        type="line",
+        x0=now, x1=now, y0=0, y1=1,
+        xref="x", yref="paper",
+        line=dict(color="#90a4ae", width=2, dash="dash"),
+    )
+    fig.add_annotation(
+        x=now, y=1,
+        xref="x", yref="paper",
+        text=" ปัจจุบัน",
+        showarrow=False,
+        xanchor="left", yanchor="top",
+        font=dict(color="#90a4ae", size=11)
+    )
+
+    # 7. Threshold Lines
+    fig.add_hline(y=37.5, line_dash="dot", line_color="#ffd600", line_width=1.5)
+    fig.add_annotation(x=0.01, y=37.5, xref="paper", yref="y", text="เริ่มมีผลกระทบ (37.5)", showarrow=False, font=dict(color="#ffd600", size=10), yanchor="bottom")
+    
+    fig.add_hline(y=75, line_dash="dot", line_color="#ff1744", line_width=1.5)
+    fig.add_annotation(x=0.01, y=75, xref="paper", yref="y", text="อันตราย (75)", showarrow=False, font=dict(color="#ff1744", size=10), yanchor="bottom")
+
+    # 8. Clean Layout
+    y_max = max(150, float(prov_data["PM25"].max()) * 1.1, float(fore["predicted"].max() if not fore.empty else 0) * 1.1)
+    
     fig.update_layout(
         title=dict(
-            text=f"🔮 พยากรณ์ PM2.5 — {province} | ย้อนหลัง 7 วัน + พยากรณ์ 72 ชั่วโมง",
-            font_size=15,
+            text=f"แนวโน้มฝุ่น PM2.5 ล่วงหน้า 7 วัน — <b>{province}</b>",
+            font_size=18
         ),
-        xaxis_title="วัน / เวลา",
-        yaxis_title="PM2.5 (µg/m³)",
-        height=420,
+        xaxis=dict(
+            title="",
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.05)",
+            gridwidth=1,
+            griddash="dot",
+            showline=False,
+            zeroline=False
+        ),
+        yaxis=dict(
+            title="ปริมาณฝุ่น PM2.5 (µg/m³)",
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.05)",
+            gridwidth=1,
+            showline=False,
+            zeroline=False,
+            range=[0, y_max]
+        ),
+        height=450,
+        margin=dict(l=40, r=20, t=60, b=20),
         hovermode="x unified",
-        legend=dict(orientation="h", y=-0.30, font_size=11),
-        plot_bgcolor="#0e1117",
-        paper_bgcolor="#0e1117",
-        font=dict(color="#e0e0e0"),
-        yaxis=dict(range=[0, y_max], gridcolor="#1e2630"),
-        xaxis=dict(showgrid=True, gridcolor="#1e2630"),
+        legend=dict(
+            orientation="h", 
+            yanchor="bottom", 
+            y=1.02, 
+            xanchor="right", 
+            x=1,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=12)
+        ),
+        plot_bgcolor="rgba(14, 17, 23, 1)",
+        paper_bgcolor="rgba(14, 17, 23, 1)",
+        font=dict(color="#cfd8dc")
     )
+
     return fig
 
 
@@ -262,9 +300,9 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
     info       = pm25_level_info(pm25_max)
     trend_icon = "📈" if pm25_trend > 2 else "📉" if pm25_trend < -2 else "➡️"
     trend_txt  = (
-        f"{trend_icon} ค่าเฉลี่ย 72h "
-        f"{'สูงกว่า' if pm25_trend > 0 else 'ต่ำกว่า'} 24h ก่อน "
-        f"{abs(pm25_trend):.1f} µg/m³"
+        f"{trend_icon} แนวโน้ม "
+        f"{'สูงขึ้น' if pm25_trend > 0 else 'ต่ำลง'} "
+        f"{abs(pm25_trend):.1f} µg/m³ เทียบกับสัปดาห์ก่อน"
     )
 
     st.markdown(
@@ -275,7 +313,7 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
             <div>
               <h2 style='margin:0;color:{info["color"]}'>{info["emoji"]} {info["label"]}</h2>
               <p style='margin:6px 0 0;color:#ccc;font-size:15px'>
-                PM2.5 สูงสุดพยากรณ์ 72h:
+                PM2.5 สูงสุดพยากรณ์ 7 วันอันตราย:
                 <b style='color:{info["color"]}'>{pm25_max:.1f} µg/m³</b>
                 &nbsp;|&nbsp; {trend_txt}
               </p>
@@ -289,6 +327,7 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
         """,
         unsafe_allow_html=True,
     )
+
 
     groups = [
         {

@@ -13,7 +13,7 @@ from pathlib import Path
 from components import (
     PROVINCE_COORDS,
     get_shap_summary_html,
-    plot_72h_forecast,
+    plot_7day_forecast,
     plot_feature_importance,
     plot_hotspot_priority_map,
     plot_shap_waterfall,
@@ -113,20 +113,30 @@ prov_data = (
 firms = load_firms_data()
 
 # Derived values for KPI cards
-latest    = prov_data.sort_values("Datetime").iloc[-1]
-prev_24h  = prov_data.sort_values("Datetime").iloc[-25] if len(prov_data) > 25 else latest
-fore72    = prov_data.tail(72)
+now = pd.Timestamp.now().floor('h')
+# กรองข้อมูลล่าสุดที่น้อยกว่าหรือเท่ากับเวลาปัจจุบัน
+actual_data = prov_data[prov_data["Datetime"] <= now]
+if actual_data.empty:
+    latest = prov_data.iloc[0]
+else:
+    latest = actual_data.iloc[-1]
+
+prev_24h_data = prov_data[prov_data["Datetime"] <= now - pd.Timedelta(days=1)]
+prev_24h = prev_24h_data.iloc[-1] if not prev_24h_data.empty else latest
+
+# ช่วงพยากรณ์คือข้อมูลที่เวลามากกว่าปัจจุบัน
+fore_period = prov_data[prov_data["Datetime"] > now].head(168) # 7 วัน
 
 pm25_now     = float(latest["PM25"])
-pm25_pred72  = float(fore72["predicted"].max())
+pm25_pred_max = float(fore_period["predicted"].max()) if not fore_period.empty else pm25_now
 pm25_trend   = (
-    float(fore72["predicted"].mean() - prov_data.iloc[-97:-25]["predicted"].mean())
-    if len(prov_data) > 97 else 0.0
+    float(fore_period["predicted"].mean() - actual_data.tail(168)["PM25"].mean())
+    if not fore_period.empty and not actual_data.empty else 0.0
 )
 wind_deg = float(latest.get("wind_direction_10m", 0))
 
 info_now  = pm25_level_info(pm25_now)
-info_fore = pm25_level_info(pm25_pred72)
+info_fore = pm25_level_info(pm25_pred_max)
 
 # ─── Header ───────────────────────────────────────────────────────────────────
 st.markdown(f"# 🌫️ ระบบเตือนภัยล่วงหน้า PM2.5 — {province}")
@@ -149,8 +159,8 @@ with k1:
 
 with k2:
     st.metric(
-        label=f"สูงสุดพยากรณ์ 72h  {info_fore['emoji']}",
-        value=f"{pm25_pred72:.1f} µg/m³",
+        label=f"สูงสุดพยากรณ์ 7 วัน  {info_fore['emoji']}",
+        value=f"{pm25_pred_max:.1f} µg/m³",
         delta=info_fore["label"],
         delta_color="off",
     )
@@ -180,7 +190,7 @@ st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
-    "🔮  พยากรณ์ 72h",
+    "🔮  พยากรณ์ 7 วัน",
     "🚨  ระบบแจ้งเตือน",
     "🗺️  แผนที่จุดเสี่ยง",
     "🧠  อธิบายโมเดล (SHAP)",
@@ -189,53 +199,59 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ── Tab 1 : Forecast ──────────────────────────────────────────────────────────
 with tab1:
     st.plotly_chart(
-        plot_72h_forecast(prov_data, province),
+        plot_7day_forecast(prov_data, province),
         use_container_width=True,
     )
 
-    st.subheader("📋 สรุปพยากรณ์ราย 24 ชั่วโมง")
-    daily_rows = fore72.copy()
-    daily_rows["วันที่"] = daily_rows["Datetime"].dt.strftime("%d %b %Y")
-    daily_tbl = (
-        daily_rows.groupby("วันที่")["predicted"]
-        .agg(["mean", "max", "min"])
-        .rename(columns={"mean": "เฉลี่ย", "max": "สูงสุด", "min": "ต่ำสุด"})
-        .reset_index()
-    )
-    daily_tbl["ระดับ"] = daily_tbl["สูงสุด"].apply(
-        lambda x: pm25_level_info(x)["emoji"] + "  " + pm25_level_info(x)["label"]
-    )
-    for col in ["เฉลี่ย", "สูงสุด", "ต่ำสุด"]:
-        daily_tbl[col] = daily_tbl[col].round(1).astype(str) + " µg/m³"
-    st.dataframe(daily_tbl, use_container_width=True, hide_index=True)
+    st.subheader("📋 สรุปพยากรณ์รายวัน (7 วันข้างหน้า)")
+    if not fore_period.empty:
+        daily_rows = fore_period.copy()
+        daily_rows["วันที่"] = daily_rows["Datetime"].dt.strftime("%d %b %Y")
+        daily_tbl = (
+            daily_rows.groupby("วันที่")["predicted"]
+            .agg(["mean", "max", "min"])
+            .rename(columns={"mean": "เฉลี่ย", "max": "สูงสุด", "min": "ต่ำสุด"})
+            .reset_index()
+        )
+        daily_tbl["ระดับ"] = daily_tbl["สูงสุด"].apply(
+            lambda x: pm25_level_info(x)["emoji"] + "  " + pm25_level_info(x)["label"]
+        )
+        for col in ["เฉลี่ย", "สูงสุด", "ต่ำสุด"]:
+            daily_tbl[col] = daily_tbl[col].round(1).astype(str) + " µg/m³"
+        st.dataframe(daily_tbl, use_container_width=True, hide_index=True)
+    else:
+        st.info("ไม่มีข้อมูลพยากรณ์ล่วงหน้าในขณะนี้")
 
 # ── Tab 2 : Alert System ──────────────────────────────────────────────────────
 with tab2:
-    render_alert_section(pm25_pred72, province, pm25_trend)
+    render_alert_section(pm25_pred_max, province, pm25_trend)
 
     st.divider()
-    st.subheader("📅 ปฏิทินความเสี่ยง (72 ชั่วโมงข้างหน้า)")
+    st.subheader("📅 ปฏิทินความเสี่ยง (7 วันข้างหน้า)")
 
-    daily_cal = fore72.copy()
-    daily_cal["date"] = daily_cal["Datetime"].dt.date
-    daily_max = daily_cal.groupby("date")["predicted"].max().reset_index()
+    if not fore_period.empty:
+        daily_cal = fore_period.copy()
+        daily_cal["date"] = daily_cal["Datetime"].dt.date
+        daily_max = daily_cal.groupby("date")["predicted"].max().reset_index()
 
-    cal_cols = st.columns(len(daily_max))
-    for col, (_, row) in zip(cal_cols, daily_max.iterrows()):
-        info = pm25_level_info(row["predicted"])
-        with col:
-            st.markdown(
-                f"""<div style='background:{info["color"]}1a;border:1px solid {info["color"]}44;
-                         text-align:center;padding:12px 6px;border-radius:8px'>
-                  <div style='font-size:26px'>{info["emoji"]}</div>
-                  <div style='font-size:11px;color:#ccc'>{row["date"].strftime("%d %b")}</div>
-                  <div style='font-weight:bold;color:{info["color"]};font-size:16px'>
-                    {row["predicted"]:.0f}
-                  </div>
-                  <div style='font-size:10px;color:#aaa'>{info["label"]}</div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
+        cal_cols = st.columns(len(daily_max))
+        for col, (_, row) in zip(cal_cols, daily_max.iterrows()):
+            info = pm25_level_info(row["predicted"])
+            with col:
+                st.markdown(
+                    f"""<div style='background:{info["color"]}1a;border:1px solid {info["color"]}44;
+                             text-align:center;padding:12px 6px;border-radius:8px'>
+                      <div style='font-size:26px'>{info["emoji"]}</div>
+                      <div style='font-size:11px;color:#ccc'>{row["date"].strftime("%d %b")}</div>
+                      <div style='font-weight:bold;color:{info["color"]};font-size:16px'>
+                        {row["predicted"]:.0f}
+                      </div>
+                      <div style='font-size:10px;color:#aaa'>{info["label"]}</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("ไม่มีข้อมูลพยากรณ์ล่วงหน้าในขณะนี้")
 
 # ── Tab 3 : Hotspot Priority Map ──────────────────────────────────────────────
 with tab3:
@@ -308,7 +324,7 @@ with tab3:
                 f"ย้อนหลัง {days_back} วัน จากข้อมูล NASA FIRMS VIIRS"
             )
 
-# ── Tab 4 : SHAP Explainability ───────────────────────────────────────────────
+    # ── Tab 4 : SHAP Explainability ───────────────────────────────────────────────
 with tab4:
     st.subheader("🧠 อธิบายการตัดสินใจของโมเดล (SHAP)")
     st.caption(
@@ -316,15 +332,20 @@ with tab4:
         "**สีแดง** = ทำให้ค่าฝุ่นสูงขึ้น  |  **สีเขียว** = ทำให้ค่าฝุ่นลดลง"
     )
 
-    # โหลด model เฉพาะ Tab นี้ (lazy — ไม่กระทบ tab อื่น)
+    # โหลด model
     model, scaler, feature_names = load_model_artifacts()
 
-    available_features = [f for f in feature_names if f in prov_data.columns]
-    X_latest = prov_data[available_features].fillna(0)
+    # ต้องใช้ Features ให้ครบตามที่ Model ต้องการ (70 ตัว) และเรียงลำดับให้ถูกต้อง
+    # สร้าง Dataframe ที่มี Features ครบตาม model.feature_names_in_
+    X_latest_full = pd.DataFrame(0.0, index=[0], columns=feature_names)
+    for f in feature_names:
+        if f in prov_data.columns:
+            X_latest_full.at[0, f] = float(prov_data[f].iloc[-1])
+    
     pm25_latest_pred = float(prov_data["predicted"].iloc[-1])
 
     # Insight summary sentence
-    summary_html = get_shap_summary_html(model, X_latest, available_features, pm25_latest_pred)
+    summary_html = get_shap_summary_html(model, X_latest_full, feature_names, pm25_latest_pred)
     if summary_html:
         st.markdown(
             f"<div style='background:#1a237e2a;border-left:4px solid #42a5f5;"
@@ -337,19 +358,18 @@ with tab4:
     with col_wf:
         st.markdown("#### ⚡ SHAP Waterfall — การพยากรณ์ล่าสุด")
         with st.spinner("คำนวณ SHAP values..."):
-            wf_fig = plot_shap_waterfall(model, X_latest, available_features)
+            wf_fig = plot_shap_waterfall(model, X_latest_full, feature_names)
         if wf_fig:
             st.plotly_chart(wf_fig, use_container_width=True)
         else:
             st.warning(
-                "ไม่พบ library `shap`\n\n"
-                "ติดตั้งด้วยคำสั่ง: `pip install shap`"
+                "ไม่พบ library `shap` หรือการคำนวณผิดพลาด"
             )
 
     with col_imp:
         st.markdown("#### 📊 Feature Importance รวม (XGBoost Gain)")
         st.plotly_chart(
-            plot_feature_importance(model, available_features),
+            plot_feature_importance(model, feature_names),
             use_container_width=True,
         )
 
@@ -373,4 +393,5 @@ with tab4:
     for i, (feat, desc) in enumerate(rows):
         col = c1 if i % 2 == 0 else c2
         col.markdown(f"**`{feat}`** — {desc}")
+
 

@@ -43,6 +43,9 @@ jobs:
           MAP_KEY: ${{ secrets.MAP_KEY }}
         run: python app/fetch_daily.py
 
+      - name: Fetch 7-day forecast
+        run: python src/data_collection/fetch_forecast.py
+
       # 5. รัน predict script
       - name: Run predictions
         run: python app/predict.py
