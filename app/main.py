@@ -206,19 +206,28 @@ with tab1:
     st.subheader("📋 สรุปพยากรณ์รายวัน (7 วันข้างหน้า)")
     if not fore_period.empty:
         daily_rows = fore_period.copy()
-        daily_rows["วันที่"] = daily_rows["Datetime"].dt.strftime("%d %b %Y")
+        # สร้างคอลัมน์ date เพื่อใช้ใน การ groupby และ sort (ป้องกันการเรียงตามตัวอักษร)
+        daily_rows["date_obj"] = daily_rows["Datetime"].dt.date
         daily_tbl = (
-            daily_rows.groupby("วันที่")["predicted"]
+            daily_rows.groupby("date_obj")["predicted"]
             .agg(["mean", "max", "min"])
             .rename(columns={"mean": "เฉลี่ย", "max": "สูงสุด", "min": "ต่ำสุด"})
             .reset_index()
+            .sort_values("date_obj", ascending=True) # เรียงจากปัจจุบันไปอนาคต
         )
+        # แปลงเป็น format ภาษาไทยให้อ่านง่าย
+        daily_tbl["วันที่"] = pd.to_datetime(daily_tbl["date_obj"]).dt.strftime("%d %b %Y")
+        
         daily_tbl["ระดับ"] = daily_tbl["สูงสุด"].apply(
             lambda x: pm25_level_info(x)["emoji"] + "  " + pm25_level_info(x)["label"]
         )
+        
+        # จัดรูปแบบตัวเลขและการแสดงผล
+        cols_to_show = ["วันที่", "เฉลี่ย", "สูงสุด", "ต่ำสุด", "ระดับ"]
         for col in ["เฉลี่ย", "สูงสุด", "ต่ำสุด"]:
             daily_tbl[col] = daily_tbl[col].round(1).astype(str) + " µg/m³"
-        st.dataframe(daily_tbl, use_container_width=True, hide_index=True)
+            
+        st.dataframe(daily_tbl[cols_to_show], use_container_width=True, hide_index=True)
     else:
         st.info("ไม่มีข้อมูลพยากรณ์ล่วงหน้าในขณะนี้")
 
