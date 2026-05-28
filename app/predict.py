@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timedelta
+from config import IS_HAZE_MONTHS
 
 # ── Config ────────────────────────────────────────────────────
 
@@ -120,7 +121,7 @@ def build_features_single_row(df_prov, current_idx, feature_list):
     p.at[p.index[idx], 'day']            = dt.day
     p.at[p.index[idx], 'hour']           = dt.hour
     p.at[p.index[idx], 'dayofyear']      = dt.dayofyear
-    p.at[p.index[idx], 'is_haze_season'] = 1 if dt.month in [3, 4] else 0
+    p.at[p.index[idx], 'is_haze_season'] = 1 if dt.month in IS_HAZE_MONTHS else 0
     p.at[p.index[idx], 'hour_sin']       = np.sin(2 * np.pi * dt.hour  / 24)
     p.at[p.index[idx], 'hour_cos']       = np.cos(2 * np.pi * dt.hour  / 24)
     p.at[p.index[idx], 'month_sin']      = np.sin(2 * np.pi * dt.month / 12)
@@ -218,7 +219,7 @@ def run_recursive_predict(df, model, feature_list):
             
     return pd.DataFrame(results_list)
 
-def save_predictions(results, df_final):
+def save_predictions(results, df_final, feature_list):
     # บันทึกเป็น CSV สำหรับแสดงผลประวัติพยากรณ์
     out_path = OUTPUT_DIR / "predictions_7d.csv"
     results.to_csv(out_path, index=False)
@@ -227,26 +228,79 @@ def save_predictions(results, df_final):
     # บันทึกไฟล์สำหรับ Dashboard (รวมประวัติย้อนหลัง + พยากรณ์)
     dashboard_path = DATA_DIR / "processed" / "dashboard_data.csv"
     
-    # เลือกคอลัมน์ที่จำเป็นสำหรับ Dashboard
+    # BUG-01: แยก Predicted ออกจาก PM25 จริง
+    results_map = results.set_index(['Province', 'Datetime'])['Predicted_PM25']
+    df_final['predicted'] = df_final.apply(
+        lambda r: results_map.get((r['Province'], r['Datetime']), r['PM25']),
+        axis=1
+    )
+    # สำหรับแถวที่เป็นพยากรณ์ ให้ PM25 เป็น NaN (เพื่อให้กราฟ Actual ตัดจบที่ปัจจุบัน)
+    forecast_mask = df_final.set_index(['Province', 'Datetime']).index.isin(results_map.index)
+    df_final.loc[forecast_mask, 'PM25'] = np.nan
+
+    # BUG-03: กรองคอลัมน์ที่จำเป็นสำหรับ Dashboard และ SHAP
     base_cols = [
-        'Datetime', 'Province', 'PM25', 'temperature_2m', 'relative_humidity_2m', 
-        'precipitation', 'surface_pressure', 'wind_speed_10m', 'wind_direction_10m',
+        'Datetime', 'Province', 'PM25', 'predicted',
+        'temperature_2m', 'relative_humidity_2m', 'precipitation',
+        'surface_pressure', 'wind_speed_10m', 'wind_direction_10m',
         'hotspot_count', 'frp_sum', 'frp_mean',
     ]
-    # รวม PM25 ที่เป็นทั้งค่าจริงและค่าพยากรณ์ไว้ในคอลัมน์ PM25 และเพิ่มคอลัมน์ 'predicted'
-    df_final['predicted'] = df_final['PM25'] 
+    # เก็บ Features ที่ SHAP ใช้ โดยเช็คจาก feature_list
+    shap_features = [f for f in feature_list if any(k in f for k in ['lag', 'roll', 'delta', 'log', 'sin', 'cos', 'enc', 'haze', 'year', 'month', 'day', 'hour'])]
+    save_cols = list(set(base_cols + shap_features))
+    save_cols = [c for c in save_cols if c in df_final.columns]
     
     # กรองเอาแค่ 14 วัน (ย้อนหลัง 7 + พยากรณ์ 7)
     cutoff = datetime.now() - timedelta(days=14)
     dashboard_df = df_final[df_final['Datetime'] >= cutoff].copy()
     
-    # เก็บ Features บางตัวที่ Dashboard ใช้แสดงผล (เช่น SHAP)
-    # ในที่นี้เก็บไว้ท้ังหมดที่อยู่ใน feature_list
-    save_cols = base_cols + ['predicted'] + [f for f in df_final.columns if f in PROVINCE_LABELS or 'lag' in f or 'roll' in f or 'delta' in f or 'log' in f]
-    save_cols = list(set([c for c in save_cols if c in df_final.columns]))
-    
     dashboard_df[save_cols].to_csv(dashboard_path, index=False)
     print(f"  Saved → {dashboard_path} ({len(dashboard_df)} rows)")
+
+def compute_shap_values(model, df_final, feature_list):
+    """
+    Precompute SHAP values for the latest prediction row of each province.
+    Saves to data/processed/shap_latest.csv
+    """
+    try:
+        import shap
+    except ImportError:
+        print("  WARN: Library 'shap' not found. Skipping precompute.")
+        return
+
+    print("\nPrecomputing SHAP values...")
+    explainer = shap.TreeExplainer(model)
+    shap_records = []
+
+    for prov in PROVINCES:
+        p = df_final[df_final['Province'] == prov].sort_values('Datetime')
+        if p.empty: continue
+        
+        # ค้นหาแถวสุดท้ายที่มีค่าพยากรณ์ (predicted) ล่าสุด
+        # ปกติคือแถวสุดท้ายของ DataFrame
+        latest_row = p.iloc[[-1]]
+        X = latest_row[feature_list].fillna(0).astype(float)
+        
+        # คำนวณ SHAP
+        shap_values = explainer.shap_values(X)
+        base_value  = float(explainer.expected_value)
+        pred_val    = float(latest_row['predicted'].iloc[0])
+        
+        sv = shap_values[0]
+        for i, feat in enumerate(feature_list):
+            shap_records.append({
+                'Province': prov,
+                'feature_name': feat,
+                'shap_value': sv[i],
+                'feature_value': X.iloc[0, i],
+                'base_value': base_value,
+                'predicted_pm25': pred_val
+            })
+
+    shap_df = pd.DataFrame(shap_records)
+    out_path = DATA_DIR / "processed" / "shap_latest.csv"
+    shap_df.to_csv(out_path, index=False)
+    print(f"  Saved SHAP → {out_path}")
 
 if __name__ == "__main__":
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Running recursive predict pipeline...")
@@ -278,7 +332,8 @@ if __name__ == "__main__":
     results = pd.DataFrame(results_list)
     df_final = pd.concat(df_final_list, ignore_index=True)
     
-    save_predictions(results, df_final)
+    save_predictions(results, df_final, feature_list)
+    compute_shap_values(model, df_final, feature_list)
     
     # Preview
     print("\nPreview Prediction (Chiang Mai):")

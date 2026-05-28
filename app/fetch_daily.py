@@ -74,7 +74,7 @@ def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
     """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน (forecast)"""
 
     start = (TODAY - timedelta(days=10)).isoformat()
-    end = (TODAY + timedelta(days=3)).isoformat()
+    end = (TODAY + timedelta(days=7)).isoformat()
 
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -108,7 +108,7 @@ def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame
     """ดึง PM2.5 จาก air quality endpoint (ย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน)"""
 
     start = (TODAY - timedelta(days=10)).isoformat()
-    end = (TODAY + timedelta(days=3)).isoformat()
+    end = (TODAY + timedelta(days=7)).isoformat()
 
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
@@ -170,7 +170,7 @@ def fetch_firms(days_back: int = 3) -> pd.DataFrame:
     url = (
         f"https://firms.modaps.eosdis.nasa.gov/api/area/csv"
         f"/{FIRMS_API_KEY}/VIIRS_SNPP_NRT"
-        f"/97.3,17.5,102.5,20.5"  # west,south,east,north (ครอบภาคเหนือ)
+        f"/92.0,13.0,106.0,26.0"  # GMS bbox: west,south,east,north
         f"/{days_back}"           # ย้อนหลังกี่วัน
     )
 

@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from config import IS_HAZE_MONTHS
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 # Thailand PM2.5 standards (µg/m³)
@@ -148,7 +149,7 @@ def build_province_features(df: pd.DataFrame, province: str,
 
 # ─── Section 1: 7-Day Forecast ──────────────────────────────────────────────
 
-def plot_7day_forecast(prov_data: pd.DataFrame, province: str) -> go.Figure:
+def plot_7day_forecast(prov_data: pd.DataFrame, province: str, now: pd.Timestamp = None) -> go.Figure:
     """
     Ultra-polished 7-Day Forecast Chart:
       - Smooth spline curves
@@ -156,8 +157,10 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str) -> go.Figure:
       - Subtle confidence bands and grid
       - Removed range slider for a cleaner look
     """
+    if now is None:
+        now = pd.Timestamp.now().floor('h')
+        
     d = prov_data.sort_values("Datetime").tail(14 * 24).copy()
-    now = pd.Timestamp.now().floor('h')
     hist = d[d["Datetime"] <= now]
     fore = d[d["Datetime"] >= now] # Include 'now' to connect the lines
 
@@ -258,7 +261,7 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str) -> go.Figure:
         xaxis=dict(
             title="",
             showgrid=True,
-            gridcolor="rgba(255,255,255,0.05)",
+            gridcolor="rgba(0,0,0,0.05)",
             gridwidth=1,
             griddash="dot",
             showline=False,
@@ -267,7 +270,7 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str) -> go.Figure:
         yaxis=dict(
             title="ปริมาณฝุ่น PM2.5 (µg/m³)",
             showgrid=True,
-            gridcolor="rgba(255,255,255,0.05)",
+            gridcolor="rgba(0,0,0,0.05)",
             gridwidth=1,
             showline=False,
             zeroline=False,
@@ -285,9 +288,9 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str) -> go.Figure:
             bgcolor="rgba(0,0,0,0)",
             font=dict(size=12)
         ),
-        plot_bgcolor="rgba(14, 17, 23, 1)",
-        paper_bgcolor="rgba(14, 17, 23, 1)",
-        font=dict(color="#cfd8dc")
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#333333")
     )
 
     return fig
@@ -312,12 +315,12 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
           <div style='display:flex;justify-content:space-between;align-items:center'>
             <div>
               <h2 style='margin:0;color:{info["color"]}'>{info["emoji"]} {info["label"]}</h2>
-              <p style='margin:6px 0 0;color:#ccc;font-size:15px'>
+              <p style='margin:6px 0 0;color:#555;font-size:15px'>
                 PM2.5 สูงสุดพยากรณ์ 7 วันอันตราย:
                 <b style='color:{info["color"]}'>{pm25_max:.1f} µg/m³</b>
                 &nbsp;|&nbsp; {trend_txt}
               </p>
-              <p style='margin:6px 0 0;color:#aaa;font-size:13px'>
+              <p style='margin:6px 0 0;color:#666;font-size:13px'>
                 💡 {info["advice"]}
               </p>
             </div>
@@ -364,7 +367,7 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
         border = "#ff1744" if g["alert"] else "#00e676"
         status = "⚠️ แจ้งเตือน" if g["alert"] else "✅ ปกติ"
         li = "".join(
-            f"<li style='margin:3px 0;color:#bbb;font-size:12px'>{a}</li>"
+            f"<li style='margin:3px 0;color:#555;font-size:12px'>{a}</li>"
             for a in g["actions"]
         )
         with col:
@@ -372,7 +375,7 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
                 f"""<div style='background:{border}12;border:1px solid {border}44;
                          padding:16px;border-radius:10px;min-height:175px'>
                   <span style='color:{border};font-size:12px;font-weight:bold'>{status}</span><br>
-                  <b style='font-size:14px'>{g["title"]}</b>
+                  <b style='font-size:14px;color:#333'>{g["title"]}</b>
                   <ul style='padding-left:16px;margin:8px 0 0'>{li}</ul>
                 </div>""",
                 unsafe_allow_html=True,
@@ -398,6 +401,14 @@ def plot_hotspot_priority_map(
     cx, cy = coords["lat"], coords["lon"]
 
     df = firms_df.copy()
+    
+    # 4.5 Cross-border Hotspot identification (Simple BBox fallback)
+    def identify_country(lat, lon):
+        if 5.6 <= lat <= 20.5 and 97.3 <= lon <= 105.6:
+            return "Thailand"
+        return "Cross-border"
+    
+    df["country"] = df.apply(lambda r: identify_country(r["latitude"], r["longitude"]), axis=1)
 
     # Haversine distance to province centroid
     dlat = np.radians(df["latitude"]  - cx)
@@ -426,13 +437,14 @@ def plot_hotspot_priority_map(
         size_max=18,
         zoom=6,
         center={"lat": cx, "lon": cy},
-        mapbox_style="carto-darkmatter",
+        mapbox_style="carto-positron",
         hover_data={
             "latitude": False, "longitude": False,
             "priority_score": ":.3f", "frp": ":.1f", "distance_km": ":.0f",
+            "country": True
         },
         labels={"priority_score": "คะแนนความสำคัญ", "frp": "FRP (MW)",
-                "distance_km": "ระยะ (กม.)"},
+                "distance_km": "ระยะ (กม.)", "country": "ประเทศ"},
         title=f"🗺️ แผนที่จุดความร้อน & ลำดับความสำคัญ — {province}",
     )
 
@@ -441,7 +453,7 @@ def plot_hotspot_priority_map(
     fig.add_trace(go.Scattermapbox(
         lat=top["latitude"], lon=top["longitude"],
         mode="markers",
-        marker=dict(size=22, color="rgba(255,235,59,0.28)"),
+        marker=dict(size=22, color="rgba(255,160,0,0.3)"),
         name=f"🎯 Top {top_n} เป้าหมายดับไฟ",
         hoverinfo="skip",
     ))
@@ -450,17 +462,17 @@ def plot_hotspot_priority_map(
     fig.add_trace(go.Scattermapbox(
         lat=[cx], lon=[cy],
         mode="markers+text",
-        marker=dict(size=14, color="#42a5f5"),
+        marker=dict(size=14, color="#1976d2"),
         text=[f"📍 {province}"],
         textposition="bottom right",
-        textfont=dict(color="#fff", size=13),
+        textfont=dict(color="#333", size=13),
         name=province,
     ))
 
     fig.update_layout(
         height=540,
-        paper_bgcolor="#0e1117",
-        font=dict(color="#e0e0e0"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#333333"),
         legend=dict(orientation="h", y=-0.06),
         coloraxis_colorbar=dict(title="Priority", thickness=12),
     )
@@ -481,25 +493,47 @@ def _compute_shap(model, X_row: pd.DataFrame):
 
 
 def plot_shap_waterfall(model, X_latest: pd.DataFrame,
-                        feature_names: list) -> go.Figure | None:
+                        feature_names: list, precomputed_shap: pd.DataFrame = None, 
+                        province: str = None) -> go.Figure | None:
     """
     SHAP waterfall bar chart for the latest prediction.
     Red bars = features pushing PM2.5 higher.
     Green bars = features pushing PM2.5 lower.
     """
-    sv, base_val = _compute_shap(model, X_latest.iloc[[-1]])
-    if sv is None:
-        return None
+    sv = None
+    base_val = 0.0
+    final_pred = 0.0
+    feat_df = pd.DataFrame()
 
-    feat_df = (
-        pd.DataFrame({
-            "feature": feature_names,
-            "shap":    sv,
-            "value":   X_latest.iloc[-1].values,
-        })
-        .assign(abs_shap=lambda d: d["shap"].abs())
-        .nlargest(15, "abs_shap")
-    )
+    # 1. Try to use precomputed data
+    if precomputed_shap is not None and province is not None:
+        prov_shap = precomputed_shap[precomputed_shap['Province'] == province]
+        if not prov_shap.empty:
+            base_val = float(prov_shap['base_value'].iloc[0])
+            final_pred = float(prov_shap['predicted_pm25'].iloc[0])
+            feat_df = (
+                prov_shap.rename(columns={'feature_name': 'feature', 'shap_value': 'shap', 'feature_value': 'value'})
+                .assign(abs_shap=lambda d: d["shap"].abs())
+                .nlargest(15, "abs_shap")
+            )
+            sv = feat_df['shap'].values # Just to trigger next steps
+
+    # 2. Fallback to live computation
+    if sv is None:
+        sv, base_val = _compute_shap(model, X_latest.iloc[[-1]])
+        if sv is None:
+            return None
+        
+        final_pred = base_val + float(sv.sum())
+        feat_df = (
+            pd.DataFrame({
+                "feature": feature_names,
+                "shap":    sv,
+                "value":   X_latest.iloc[-1].values,
+            })
+            .assign(abs_shap=lambda d: d["shap"].abs())
+            .nlargest(15, "abs_shap")
+        )
 
     colors = ["#ef5350" if v > 0 else "#66bb6a" for v in feat_df["shap"]]
     labels = [
@@ -518,7 +552,6 @@ def plot_shap_waterfall(model, X_latest: pd.DataFrame,
     ))
     fig.add_vline(x=0, line_color="#607d8b", line_width=1.5)
 
-    final_pred = base_val + float(sv.sum())
     fig.update_layout(
         title=dict(
             text=(
@@ -529,8 +562,8 @@ def plot_shap_waterfall(model, X_latest: pd.DataFrame,
         ),
         xaxis_title="SHAP Value (µg/m³)",
         height=480,
-        plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-        font=dict(color="#e0e0e0"),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#333333"),
         yaxis=dict(autorange="reversed"),
         margin=dict(l=240, r=60),
     )
@@ -554,25 +587,37 @@ def plot_feature_importance(model, feature_names: list) -> go.Figure:
         title="📊 Global Feature Importance — Top 20 (XGBoost Gain)",
     )
     fig.update_layout(
-        plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-        font=dict(color="#e0e0e0"), height=520,
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#333333"), height=520,
         showlegend=False, coloraxis_showscale=False,
     )
     return fig
 
 
 def get_shap_summary_html(model, X_latest: pd.DataFrame,
-                          feature_names: list, pm25_pred: float) -> str:
+                          feature_names: list, pm25_pred: float,
+                          precomputed_shap: pd.DataFrame = None, 
+                          province: str = None) -> str:
     """
     Return an HTML sentence explaining the top driving factors.
     e.g. "โมเดลคาดว่าฝุ่นจะสูง 82.3 µg/m³ เพราะ: จุดความร้อน 42%, ค่าฝุ่นเมื่อวาน 31%"
     """
-    sv, _ = _compute_shap(model, X_latest.iloc[[-1]])
-    if sv is None:
-        return ""
+    feat_df = None
 
-    feat_df = pd.DataFrame({"feature": feature_names, "shap": sv})
-    total_abs = np.abs(sv).sum() + 1e-9
+    # 1. Try precomputed
+    if precomputed_shap is not None and province is not None:
+        prov_shap = precomputed_shap[precomputed_shap['Province'] == province]
+        if not prov_shap.empty:
+            feat_df = prov_shap.rename(columns={'feature_name': 'feature', 'shap_value': 'shap'})
+
+    # 2. Fallback live
+    if feat_df is None:
+        sv, _ = _compute_shap(model, X_latest.iloc[[-1]])
+        if sv is None:
+            return ""
+        feat_df = pd.DataFrame({"feature": feature_names, "shap": sv})
+
+    total_abs = np.abs(feat_df["shap"]).sum() + 1e-9
 
     # Top positive contributors (things making PM2.5 go UP)
     pos = feat_df[feat_df["shap"] > 0].nlargest(3, "shap")
@@ -588,3 +633,54 @@ def get_shap_summary_html(model, X_latest: pd.DataFrame,
         f"💬 โมเดลคาดว่าฝุ่นจะ <b style='color:#ff7043'>{pm25_pred:.1f} µg/m³</b> "
         f"เพราะ: " + " &nbsp;·&nbsp; ".join(parts)
     )
+
+
+def render_province_overview(all_data: pd.DataFrame, now: pd.Timestamp):
+    """
+    Render 8-province ranking cards based on max predicted PM2.5 in next 24h.
+    """
+    # 1. Prepare data
+    forecast_24h = all_data[
+        (all_data["Datetime"] > now) & 
+        (all_data["Datetime"] <= now + pd.Timedelta(hours=24))
+    ]
+    
+    current_vals = all_data[all_data["Datetime"] <= now].groupby("Province")["PM25"].last().to_dict()
+    
+    ranking = (
+        forecast_24h.groupby("Province")["predicted"]
+        .max()
+        .reset_index()
+        .sort_values("predicted", ascending=False)
+    )
+    
+    # 2. Render Grid
+    st.subheader("📊 สรุปสถานการณ์ 8 จังหวัดภาคเหนือ (พยากรณ์ 24h)")
+    
+    cols = st.columns(4)
+    for i, (_, row) in enumerate(ranking.iterrows()):
+        prov = row["Province"]
+        pred_max = row["predicted"]
+        curr_val = current_vals.get(prov, 0)
+        info = pm25_level_info(pred_max)
+        
+        with cols[i % 4]:
+            # Use session state to handle province change on button click
+            if st.button(
+                f"📍 {prov}\n{pred_max:.1f} µg/m³",
+                key=f"btn_{prov}",
+                use_container_width=True,
+                help=f"ดูรายละเอียดจังหวัด {prov}"
+            ):
+                st.session_state["selected_province"] = prov
+                st.rerun()
+
+            st.markdown(
+                f"""<div style='background:{info["color"]}1a;border:1px solid {info["color"]}44;
+                         padding:12px;border-radius:10px;text-align:center;margin-bottom:10px'>
+                  <div style='font-size:12px;color:#666'>ปัจจุบัน: {curr_val:.1f}</div>
+                  <div style='font-size:24px'>{info["emoji"]}</div>
+                  <div style='font-size:11px;color:{info["color"]};font-weight:bold'>{info["label"]}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )

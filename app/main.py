@@ -2,12 +2,15 @@
 
 import sys
 import os
+# เพิ่ม root และ app directory เข้า path เพื่อให้ import ได้ทุกสภาพแวดล้อม
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 import numpy as np
 import pandas as pd
 import joblib
 import streamlit as st
+import plotly.express as px
 from pathlib import Path
 
 from components import (
@@ -19,6 +22,7 @@ from components import (
     plot_shap_waterfall,
     pm25_level_info,
     render_alert_section,
+    render_province_overview,
 )
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -31,6 +35,10 @@ st.set_page_config(
 
 ROOT = Path(__file__).parent.parent
 
+# ─── Session State ───────────────────────────────────────────────────────────
+if "selected_province" not in st.session_state:
+    st.session_state["selected_province"] = "Chiang Mai"
+
 # ─── CSS Overrides ────────────────────────────────────────────────────────────
 st.markdown(
     """
@@ -38,6 +46,17 @@ st.markdown(
     [data-testid="stMetricValue"]  { font-size: 1.5rem; }
     [data-testid="stMetricDelta"]  { font-size: 0.82rem; }
     .stTabs [data-baseweb="tab"]   { font-size: 0.95rem; font-weight: 600; }
+    /* Horizontal scroll for calendar on small screens */
+    .cal-grid {
+        display: flex;
+        overflow-x: auto;
+        gap: 10px;
+        padding-bottom: 10px;
+    }
+    .cal-item {
+        min-width: 100px;
+        flex: 0 0 auto;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -47,16 +66,29 @@ st.markdown(
 
 @st.cache_resource(show_spinner="⚙️ กำลังโหลดโมเดล...")
 def load_model_artifacts():
-    model  = joblib.load(ROOT / "artifacts" / "xgboost_pm25.pkl")
-    scaler = joblib.load(ROOT / "artifacts" / "scaler.pkl")
-    return model, scaler, list(model.feature_names_in_)
+    try:
+        model  = joblib.load(ROOT / "artifacts" / "xgboost_pm25.pkl")
+        scaler = joblib.load(ROOT / "artifacts" / "scaler.pkl")
+        
+        # Try to load feature list from JSON (PRD BUG-03)
+        feat_path = ROOT / "artifacts" / "feature_list.json"
+        if feat_path.exists():
+            import json
+            with open(feat_path, encoding='utf-8') as f:
+                feature_names = json.load(f)
+        else:
+            feature_names = list(model.feature_names_in_)
+            
+        return model, scaler, feature_names
+    except Exception as e:
+        st.error(f"❌ ไม่สามารถโหลด Model Artifacts ได้: {e}")
+        st.stop()
 
 
 @st.cache_data(show_spinner="📂 กำลังโหลดข้อมูล...", ttl=3600)
 def load_dashboard_data() -> pd.DataFrame:
     """
     อ่าน dashboard_data.csv ที่ predict.py สร้างไว้แล้ว
-    มี predicted ครบทุกแถว ไม่ต้องรัน model ซ้ำใน dashboard
     """
     path = ROOT / "data" / "processed" / "dashboard_data.csv"
     if not path.exists():
@@ -70,10 +102,6 @@ def load_dashboard_data() -> pd.DataFrame:
 
 @st.cache_data(show_spinner="🛰️ กำลังโหลดข้อมูล FIRMS...", ttl=3600)
 def load_firms_data() -> pd.DataFrame:
-    """
-    อ่าน firms_recent_hotspots.csv ที่ fetch_daily.py สร้างไว้
-    ย้อนหลัง 7 วัน overwrite ทุกวัน
-    """
     path = ROOT / "data" / "processed" / "firms_recent_hotspots.csv"
     if not path.exists():
         return pd.DataFrame(columns=["acq_date", "latitude", "longitude", "frp"])
@@ -82,7 +110,17 @@ def load_firms_data() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner="🧠 กำลังโหลด SHAP values...", ttl=3600)
+def load_shap_data() -> pd.DataFrame | None:
+    path = ROOT / "data" / "processed" / "shap_latest.csv"
+    if path.exists():
+        return pd.read_csv(path)
+    return None
+
+
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
+all_data = load_dashboard_data()
+
 with st.sidebar:
     st.title("🌫️ PM2.5 Early Warning")
     st.caption("ระบบเตือนภัยล่วงหน้าฝุ่น PM2.5 ภาคเหนือ")
@@ -91,8 +129,12 @@ with st.sidebar:
     province = st.selectbox(
         "📍 เลือกจังหวัด",
         sorted(PROVINCE_COORDS.keys()),
-        index=sorted(PROVINCE_COORDS.keys()).index("Chiang Mai"),
+        index=sorted(PROVINCE_COORDS.keys()).index(st.session_state["selected_province"]),
+        key="province_selector"
     )
+    if province != st.session_state["selected_province"]:
+        st.session_state["selected_province"] = province
+        st.rerun()
 
     st.divider()
     st.markdown("**📡 แหล่งข้อมูล**")
@@ -100,307 +142,121 @@ with st.sidebar:
     st.caption("🌤️ สภาพอากาศ: Open-Meteo API")
     st.caption("🤖 โมเดล: XGBoost (69 features)")
     st.divider()
-    st.caption("อัปเดตอัตโนมัติทุกวัน เวลา 07:00 ICT")
+    
+    last_update = all_data['Datetime'].max()
+    st.caption(f"อัปเดตล่าสุด: {last_update.strftime('%d %b %Y %H:%M')} ICT")
 
-# ─── Load Data ────────────────────────────────────────────────────────────────
-all_data  = load_dashboard_data()
-prov_data = (
-    all_data[all_data["Province"] == province]
-    .sort_values("Datetime")
-    .copy()
-    .reset_index(drop=True)
-)
+# ─── Main Content ─────────────────────────────────────────────────────────────
+prov_data = all_data[all_data["Province"] == province].sort_values("Datetime").reset_index(drop=True)
 firms = load_firms_data()
+now = pd.Timestamp.now(tz='Asia/Bangkok').tz_localize(None).floor('h')
 
-# Derived values for KPI cards
-now = pd.Timestamp.now().floor('h')
-# กรองข้อมูลล่าสุดที่น้อยกว่าหรือเท่ากับเวลาปัจจุบัน
 actual_data = prov_data[prov_data["Datetime"] <= now]
-if actual_data.empty:
-    latest = prov_data.iloc[0]
-else:
-    latest = actual_data.iloc[-1]
+latest = actual_data.iloc[-1] if not actual_data.empty else prov_data.iloc[0]
+fore_period = prov_data[prov_data["Datetime"] > now].head(168)
 
-prev_24h_data = prov_data[prov_data["Datetime"] <= now - pd.Timedelta(days=1)]
-prev_24h = prev_24h_data.iloc[-1] if not prev_24h_data.empty else latest
-
-# ช่วงพยากรณ์คือข้อมูลที่เวลามากกว่าปัจจุบัน
-fore_period = prov_data[prov_data["Datetime"] > now].head(168) # 7 วัน
-
-pm25_now     = float(latest["PM25"])
+pm25_now = float(latest["PM25"])
 pm25_pred_max = float(fore_period["predicted"].max()) if not fore_period.empty else pm25_now
-pm25_trend   = (
-    float(fore_period["predicted"].mean() - actual_data.tail(168)["PM25"].mean())
-    if not fore_period.empty and not actual_data.empty else 0.0
-)
+pm25_trend = float(fore_period["predicted"].mean() - actual_data.tail(168)["PM25"].mean()) if not fore_period.empty and not actual_data.empty else 0.0
 wind_deg = float(latest.get("wind_direction_10m", 0))
 
-info_now  = pm25_level_info(pm25_now)
-info_fore = pm25_level_info(pm25_pred_max)
-
-# ─── Header ───────────────────────────────────────────────────────────────────
 st.markdown(f"# 🌫️ ระบบเตือนภัยล่วงหน้า PM2.5 — {province}")
-st.caption(
-    f"ข้อมูลล่าสุด: {latest['Datetime'].strftime('%d %b %Y %H:%M')} ICT  "
-    f"| อัปเดตอัตโนมัติทุกวัน"
-)
+st.caption(f"ข้อมูลปัจจุบัน: {latest['Datetime'].strftime('%d %b %Y %H:%M')} ICT")
 
-# ─── KPI Cards ────────────────────────────────────────────────────────────────
 k1, k2, k3, k4 = st.columns(4)
-
 with k1:
-    delta_pm25 = pm25_now - float(prev_24h["PM25"])
-    st.metric(
-        label=f"PM2.5 ปัจจุบัน  {info_now['emoji']}",
-        value=f"{pm25_now:.1f} µg/m³",
-        delta=f"{delta_pm25:+.1f} จาก 24h ก่อน",
-        delta_color="inverse",
-    )
-
+    prev_24h_data = prov_data[prov_data["Datetime"] <= now - pd.Timedelta(days=1)]
+    prev_24h = prev_24h_data.iloc[-1] if not prev_24h_data.empty else latest
+    st.metric(label=f"PM2.5 ปัจจุบัน  {pm25_level_info(pm25_now)['emoji']}", value=f"{pm25_now:.1f} µg/m³", delta=f"{pm25_now - float(prev_24h['PM25']):+.1f} จาก 24h ก่อน", delta_color="inverse")
 with k2:
-    st.metric(
-        label=f"สูงสุดพยากรณ์ 7 วัน  {info_fore['emoji']}",
-        value=f"{pm25_pred_max:.1f} µg/m³",
-        delta=info_fore["label"],
-        delta_color="off",
-    )
-
+    info_fore = pm25_level_info(pm25_pred_max)
+    st.metric(label=f"สูงสุดพยากรณ์ 7 วัน  {info_fore['emoji']}", value=f"{pm25_pred_max:.1f} µg/m³", delta=info_fore["label"], delta_color="inverse")
 with k3:
-    recent_firms = firms[
-        firms["acq_date"] >= firms["acq_date"].max() - pd.Timedelta(days=1)
-    ]
-    st.metric(
-        label="🔥 จุดความร้อน (24h ล่าสุด)",
-        value=f"{len(recent_firms):,} จุด",
-        delta=f"FRP รวม {recent_firms['frp'].sum():.0f} MW",
-        delta_color="off",
-    )
-
+    recent_firms = firms[firms["acq_date"] >= firms["acq_date"].max() - pd.Timedelta(days=1)]
+    st.metric(label="🔥 จุดความร้อน (24h ล่าสุด)", value=f"{len(recent_firms):,} จุด", delta=f"FRP รวม {recent_firms['frp'].sum():.0f} MW", delta_color="off")
 with k4:
-    temp = float(latest.get("temperature_2m", 0))
-    hum  = float(latest.get("relative_humidity_2m", 0))
-    st.metric(
-        label="🌡️ อุณหภูมิ / ความชื้น",
-        value=f"{temp:.1f} °C",
-        delta=f"ความชื้น {hum:.0f}%",
-        delta_color="off",
-    )
+    st.metric(label="🌡️ อุณหภูมิ / ความชื้น", value=f"{latest.get('temperature_2m', 0):.1f} °C", delta=f"ความชื้น {latest.get('relative_humidity_2m', 0):.0f}%", delta_color="off")
 
 st.divider()
 
-# ─── Tabs ─────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🔮  พยากรณ์ 7 วัน",
-    "🚨  ระบบแจ้งเตือน",
-    "🗺️  แผนที่จุดเสี่ยง",
-    "🧠  อธิบายโมเดล (SHAP)",
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊  ภาพรวม 8 จังหวัด", "🔮  พยากรณ์ 7 วัน", "🚨  ระบบแจ้งเตือน", "🗺️  แผนที่จุดเสี่ยง", "🧠  อธิบายโมเดล (SHAP)", "📈  Model Performance"
 ])
 
-# ── Tab 1 : Forecast ──────────────────────────────────────────────────────────
-with tab1:
-    st.plotly_chart(
-        plot_7day_forecast(prov_data, province),
-        use_container_width=True,
-    )
+with tab0:
+    render_province_overview(all_data, now)
 
+with tab1:
+    st.plotly_chart(plot_7day_forecast(prov_data, province, now=now), use_container_width=True)
     st.subheader("📋 สรุปพยากรณ์รายวัน (7 วันข้างหน้า)")
     if not fore_period.empty:
         daily_rows = fore_period.copy()
-        # สร้างคอลัมน์ date เพื่อใช้ใน การ groupby และ sort (ป้องกันการเรียงตามตัวอักษร)
         daily_rows["date_obj"] = daily_rows["Datetime"].dt.date
-        daily_tbl = (
-            daily_rows.groupby("date_obj")["predicted"]
-            .agg(["mean", "max", "min"])
-            .rename(columns={"mean": "เฉลี่ย", "max": "สูงสุด", "min": "ต่ำสุด"})
-            .reset_index()
-            .sort_values("date_obj", ascending=True) # เรียงจากปัจจุบันไปอนาคต
-        )
-        # แปลงเป็น format ภาษาไทยให้อ่านง่าย
+        daily_tbl = daily_rows.groupby("date_obj")["predicted"].agg(["mean", "max", "min"]).reset_index()
         daily_tbl["วันที่"] = pd.to_datetime(daily_tbl["date_obj"]).dt.strftime("%d %b %Y")
-        
-        daily_tbl["ระดับ"] = daily_tbl["สูงสุด"].apply(
-            lambda x: pm25_level_info(x)["emoji"] + "  " + pm25_level_info(x)["label"]
-        )
-        
-        # จัดรูปแบบตัวเลขและการแสดงผล
-        cols_to_show = ["วันที่", "เฉลี่ย", "สูงสุด", "ต่ำสุด", "ระดับ"]
-        for col in ["เฉลี่ย", "สูงสุด", "ต่ำสุด"]:
-            daily_tbl[col] = daily_tbl[col].round(1).astype(str) + " µg/m³"
-            
-        st.dataframe(daily_tbl[cols_to_show], use_container_width=True, hide_index=True)
-    else:
-        st.info("ไม่มีข้อมูลพยากรณ์ล่วงหน้าในขณะนี้")
+        daily_tbl["ระดับ"] = daily_tbl["max"].apply(lambda x: f"{pm25_level_info(x)['emoji']} {pm25_level_info(x)['label']}")
+        st.dataframe(daily_tbl[["วันที่", "mean", "max", "min", "ระดับ"]].round(1), use_container_width=True, hide_index=True)
 
-# ── Tab 2 : Alert System ──────────────────────────────────────────────────────
 with tab2:
     render_alert_section(pm25_pred_max, province, pm25_trend)
-
     st.divider()
     st.subheader("📅 ปฏิทินความเสี่ยง (7 วันข้างหน้า)")
-
     if not fore_period.empty:
         daily_cal = fore_period.copy()
         daily_cal["date"] = daily_cal["Datetime"].dt.date
         daily_max = daily_cal.groupby("date")["predicted"].max().reset_index()
-
-        cal_cols = st.columns(len(daily_max))
-        for col, (_, row) in zip(cal_cols, daily_max.iterrows()):
+        st.markdown('<div class="cal-grid">', unsafe_allow_html=True)
+        for _, row in daily_max.iterrows():
             info = pm25_level_info(row["predicted"])
-            with col:
-                st.markdown(
-                    f"""<div style='background:{info["color"]}1a;border:1px solid {info["color"]}44;
-                             text-align:center;padding:12px 6px;border-radius:8px'>
-                      <div style='font-size:26px'>{info["emoji"]}</div>
-                      <div style='font-size:11px;color:#ccc'>{row["date"].strftime("%d %b")}</div>
-                      <div style='font-weight:bold;color:{info["color"]};font-size:16px'>
-                        {row["predicted"]:.0f}
-                      </div>
-                      <div style='font-size:10px;color:#aaa'>{info["label"]}</div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-    else:
-        st.info("ไม่มีข้อมูลพยากรณ์ล่วงหน้าในขณะนี้")
+            st.markdown(f"""<div class="cal-item" style='background:{info["color"]}1a;border:1px solid {info["color"]}44;text-align:center;padding:12px 6px;border-radius:8px'>
+                <div style='font-size:26px'>{info["emoji"]}</div><div style='font-size:11px;color:#666'>{row["date"].strftime("%d %b")}</div>
+                <div style='font-weight:bold;color:{info["color"]};font-size:16px'>{row["predicted"]:.0f}</div>
+                <div style='font-size:10px;color:#555'>{info["label"]}</div></div>""", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-# ── Tab 3 : Hotspot Priority Map ──────────────────────────────────────────────
 with tab3:
     col_map, col_ctrl = st.columns([3, 1])
-
     with col_ctrl:
         st.subheader("⚙️ ตั้งค่า")
-        days_back     = st.slider("ย้อนหลัง (วัน)", 1, 90, 30)
-        top_n         = st.slider("Top N จุดสำคัญ", 5, 50, 20)
-        wind_override = st.number_input(
-            "ทิศทางลม (องศา)", 0.0, 360.0, float(wind_deg), step=5.0,
-            help="0=เหนือ · 90=ตะวันออก · 180=ใต้ · 270=ตะวันตก",
-        )
-        st.divider()
-        st.caption(
-            "🎯 **ลำดับความสำคัญ** คำนวณจาก:\n"
-            "- ความรุนแรงไฟ (FRP)\n"
-            "- ระยะทางถึงตัวเมือง\n"
-            "- ทิศทางลม (จุดต้นลม = สำคัญกว่า)\n\n"
-            "ไฮไลต์วงเหลือง = จุดที่ดับไฟแล้วลด PM2.5 ได้มากที่สุด"
-        )
-
-        # Top-5 table
-        c = PROVINCE_COORDS[province]
-        df_f = firms[
-            firms["acq_date"] >= firms["acq_date"].max() - pd.Timedelta(days=days_back)
-        ].copy()
-        if len(df_f) > 0:
-            dlat_f = np.radians(df_f["latitude"]  - c["lat"])
-            dlon_f = np.radians(df_f["longitude"] - c["lon"])
-            a_f    = (
-                np.sin(dlat_f / 2) ** 2
-                + np.cos(np.radians(c["lat"]))
-                * np.cos(np.radians(df_f["latitude"]))
-                * np.sin(dlon_f / 2) ** 2
-            )
-            df_f["dist_km"]  = 6371 * 2 * np.arcsin(np.sqrt(a_f.clip(0, 1)))
-            bearing_f        = np.degrees(np.arctan2(df_f["longitude"] - c["lon"],
-                                                      df_f["latitude"]  - c["lat"])) % 360
-            angle_f          = np.abs(((bearing_f - wind_override + 180) % 360) - 180)
-            wf_f             = (1 + np.cos(np.radians(angle_f))) / 2
-            df_f["priority"] = (df_f["frp"].clip(0) * (0.5 + wf_f)) / (df_f["dist_km"] + 10)
-
-            top5 = (
-                df_f.nlargest(5, "priority")
-                [["latitude", "longitude", "frp", "dist_km", "priority"]]
-                .round(2)
-                .rename(columns={
-                    "latitude": "Lat", "longitude": "Lon",
-                    "frp": "FRP (MW)", "dist_km": "ระยะ (กม.)",
-                    "priority": "Priority",
-                })
-            )
-            st.caption("🏆 Top 5 จุดเป้าหมาย:")
-            st.dataframe(top5, use_container_width=True, hide_index=True)
-
+        days_back = st.slider("ย้อนหลัง (วัน)", 1, 90, 30)
+        top_n = st.slider("Top N จุดสำคัญ", 5, 50, 20)
+        wind_override = st.number_input("ทิศทางลม (องศา)", 0.0, 360.0, float(wind_deg), step=5.0)
     with col_map:
-        recent_firms = firms[
-            firms["acq_date"] >= firms["acq_date"].max() - pd.Timedelta(days=days_back)
-        ]
-        if len(recent_firms) == 0:
-            st.info("ไม่มีข้อมูลจุดความร้อนในช่วงเวลาที่เลือก")
-        else:
-            st.plotly_chart(
-                plot_hotspot_priority_map(recent_firms, province, wind_override, top_n),
-                use_container_width=True,
-            )
-            st.caption(
-                f"แสดง **{len(recent_firms):,}** จุดความร้อน "
-                f"ย้อนหลัง {days_back} วัน จากข้อมูล NASA FIRMS VIIRS"
-            )
+        recent_firms = firms[firms["acq_date"] >= firms["acq_date"].max() - pd.Timedelta(days=days_back)]
+        st.plotly_chart(plot_hotspot_priority_map(recent_firms, province, wind_override, top_n), use_container_width=True)
 
-    # ── Tab 4 : SHAP Explainability ───────────────────────────────────────────────
 with tab4:
     st.subheader("🧠 อธิบายการตัดสินใจของโมเดล (SHAP)")
-    st.caption(
-        "SHAP (SHapley Additive exPlanations) บอกว่าแต่ละตัวแปรมีผลต่อการพยากรณ์อย่างไร  "
-        "**สีแดง** = ทำให้ค่าฝุ่นสูงขึ้น  |  **สีเขียว** = ทำให้ค่าฝุ่นลดลง"
-    )
-
-    # โหลด model
     model, scaler, feature_names = load_model_artifacts()
-
-    # ต้องใช้ Features ให้ครบตามที่ Model ต้องการ (70 ตัว) และเรียงลำดับให้ถูกต้อง
-    # สร้าง Dataframe ที่มี Features ครบตาม model.feature_names_in_
+    shap_df = load_shap_data()
     X_latest_full = pd.DataFrame(0.0, index=[0], columns=feature_names)
     for f in feature_names:
-        if f in prov_data.columns:
-            X_latest_full.at[0, f] = float(prov_data[f].iloc[-1])
-    
+        if f in prov_data.columns: X_latest_full.at[0, f] = float(prov_data[f].iloc[-1])
     pm25_latest_pred = float(prov_data["predicted"].iloc[-1])
-
-    # Insight summary sentence
-    summary_html = get_shap_summary_html(model, X_latest_full, feature_names, pm25_latest_pred)
-    if summary_html:
-        st.markdown(
-            f"<div style='background:#1a237e2a;border-left:4px solid #42a5f5;"
-            f"padding:14px;border-radius:8px;margin-bottom:16px'>{summary_html}</div>",
-            unsafe_allow_html=True,
-        )
-
-    col_wf, col_imp = st.columns(2)
-
-    with col_wf:
-        st.markdown("#### ⚡ SHAP Waterfall — การพยากรณ์ล่าสุด")
-        with st.spinner("คำนวณ SHAP values..."):
-            wf_fig = plot_shap_waterfall(model, X_latest_full, feature_names)
+    summary_html = get_shap_summary_html(model, X_latest_full, feature_names, pm25_latest_pred, precomputed_shap=shap_df, province=province)
+    if summary_html: st.markdown(f"<div style='background:#e3f2fd;border-left:4px solid #42a5f5;padding:14px;border-radius:8px;margin-bottom:16px;color:#1565c0'>{summary_html}</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1: 
+        wf_fig = plot_shap_waterfall(model, X_latest_full, feature_names, precomputed_shap=shap_df, province=province)
         if wf_fig:
             st.plotly_chart(wf_fig, use_container_width=True)
         else:
-            st.warning(
-                "ไม่พบ library `shap` หรือการคำนวณผิดพลาด"
-            )
+            st.warning("ไม่สามารถแสดง SHAP Waterfall ได้")
+    with c2: st.plotly_chart(plot_feature_importance(model, feature_names), use_container_width=True)
 
-    with col_imp:
-        st.markdown("#### 📊 Feature Importance รวม (XGBoost Gain)")
-        st.plotly_chart(
-            plot_feature_importance(model, feature_names),
-            use_container_width=True,
-        )
-
-    st.divider()
-    st.subheader("💡 ความหมายของ Feature สำคัญ")
-    explanations = {
-        "pm25_lag_24h":         "ค่าฝุ่น PM2.5 เมื่อ 24 ชั่วโมงก่อน — ตัวทำนายที่แม่นที่สุด",
-        "pm25_roll_mean_24h":   "ค่าเฉลี่ย PM2.5 ใน 24h — แสดงแนวโน้มระยะสั้น",
-        "pm25_roll_mean_168h":  "ค่าเฉลี่ย PM2.5 ใน 7 วัน — แสดงแนวโน้มระยะยาว",
-        "hotspot_log":          "จำนวนจุดความร้อน (log scale) จาก NASA FIRMS",
-        "frp_sum_log":          "Fire Radiative Power รวม — วัดความรุนแรงของไฟ",
-        "hotspot_x_haze":       "จุดความร้อน × ฤดูหมอกควัน — Interaction ช่วงวิกฤต",
-        "wind_dir_sin / cos":   "ทิศทางลม (cyclical encoding) — บอกว่าควันพัดมาทางไหน",
-        "is_haze_season":       "อยู่ในฤดูหมอกควัน (ม.ค.–เม.ย.) หรือไม่",
-        "temperature_2m":       "อุณหภูมิ — อากาศร้อนแห้งเพิ่มความเสี่ยงไฟป่า",
-        "relative_humidity_2m": "ความชื้นสัมพัทธ์ — ความชื้นต่ำ = ไฟลามง่าย",
-        "pm25_delta_24h":       "การเปลี่ยนแปลงค่าฝุ่นใน 24h — จับ trend ขาขึ้น/ขาลง",
-    }
-    rows = list(explanations.items())
-    c1, c2 = st.columns(2)
-    for i, (feat, desc) in enumerate(rows):
-        col = c1 if i % 2 == 0 else c2
-        col.markdown(f"**`{feat}`** — {desc}")
-
-
+with tab5:
+    st.subheader("📈 การติดตามความแม่นยำของโมเดล (MAE / RMSE)")
+    try:
+        hist_path, actual_path = ROOT / "predictions" / "predictions_history.csv", ROOT / "data" / "raw" / "openmeteo_all_provinces.csv"
+        if hist_path.exists() and actual_path.exists():
+            h_df, a_df = pd.read_csv(hist_path, parse_dates=["predict_datetime"]), pd.read_csv(actual_path, parse_dates=["Datetime"])
+            perf = h_df.merge(a_df[["Datetime", "Province", "PM25"]], left_on=["predict_datetime", "Province"], right_on=["Datetime", "Province"])
+            if not perf.empty:
+                perf["error"] = (perf["pred_24h"] - perf["PM25"]).abs()
+                m1, m2 = st.columns(2)
+                m1.metric("MAE (24h Forecast)", f"{perf['error'].mean():.2f} µg/m³")
+                m2.metric("Samples", len(perf))
+                st.plotly_chart(px.histogram(perf, x="error", color="Province", title="การกระจายตัวของความคลาดเคลื่อน (Absolute Error)"), use_container_width=True)
+            else: st.info("ยังไม่มีข้อมูลจริงมาเทียบกับประวัติพยากรณ์")
+        else: st.info("ไม่พบไฟล์ประวัติพยากรณ์หรือข้อมูลจริง")
+    except Exception as e: st.error(f"เกิดข้อผิดพลาด: {e}")
