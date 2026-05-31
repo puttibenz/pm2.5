@@ -59,8 +59,8 @@ YESTERDAY = TODAY - timedelta(days=1)
 def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
     """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน (forecast)"""
 
-    start = (TODAY - timedelta(days=10)).isoformat()
-    end = (TODAY + timedelta(days=7)).isoformat()
+    start = (TODAY - timedelta(days=10)).strftime("%Y-%m-%d")
+    end = (TODAY + timedelta(days=7)).strftime("%Y-%m-%d")
 
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
