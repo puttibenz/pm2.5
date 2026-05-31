@@ -57,7 +57,7 @@ YESTERDAY = TODAY - timedelta(days=1)
 # 1. Open Meteo — ดึงข้อมูลอุตุนิยมวิทยา + PM2.5 ย้อนหลัง 3 วัน
 # ══════════════════════════════════════════════════════════════
 def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
-    """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน (forecast)"""
+    """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน + ล่วงหน้า 7 วัน (forecast)"""
 
     start = (TODAY - timedelta(days=10)).strftime("%Y-%m-%d")
     end = (TODAY + timedelta(days=7)).strftime("%Y-%m-%d")
