@@ -1,20 +1,13 @@
+import sys
+import os
+from pathlib import Path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../app")))
+
 import requests
 import pandas as pd
-from pathlib import Path
 import time
 from datetime import datetime
-
-# พิกัด 8 จังหวัดภาคเหนือ (อ้างอิงตามโครงสร้างเดิมของโปรเจกต์)
-NORTHERN_CITIES = {
-    "Chiang Mai": {"lat": 18.7883, "lon": 98.9853},
-    "Chiang Rai": {"lat": 19.9105, "lon": 99.8253},
-    "Mae Hong Son": {"lat": 19.3003, "lon": 97.9654},
-    "Lamphun": {"lat": 18.5745, "lon": 99.0087},
-    "Lampang": {"lat": 18.2888, "lon": 99.4930},
-    "Phayao": {"lat": 19.1666, "lon": 99.9022},
-    "Phrae": {"lat": 18.1446, "lon": 100.1403},
-    "Nan": {"lat": 18.7756, "lon": 100.7730}
-}
+from config import PROVINCE_COORDS as NORTHERN_CITIES
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"

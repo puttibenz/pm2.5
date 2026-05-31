@@ -5,7 +5,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import textwrap
 from config import IS_HAZE_MONTHS
+
+def clean_html(html_str: str) -> str:
+    """Helper to strip all leading/trailing whitespace from each line of HTML to prevent Markdown code blocks."""
+    return "\n".join(line.strip() for line in html_str.splitlines())
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 # Thailand PM2.5 standards (µg/m³)
@@ -161,20 +166,22 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str, now: pd.Timestamp
         now = pd.Timestamp.now().floor('h')
         
     d = prov_data.sort_values("Datetime").tail(14 * 24).copy()
-    hist = d[d["Datetime"] <= now]
-    fore = d[d["Datetime"] >= now] # Include 'now' to connect the lines
+    hist = d[d["is_predicted"] == False]
+    fore = d[d["is_predicted"] == True]
+    if not hist.empty and not fore.empty:
+        fore = pd.concat([hist.iloc[[-1]], fore], ignore_index=True)
 
     fig = go.Figure()
 
     # 1. Subtle Background Zones for Danger Levels
-    fig.add_hrect(y0=37.5, y1=75, fillcolor="rgba(255, 145, 0, 0.05)", line_width=0, layer="below")
-    fig.add_hrect(y0=75, y1=500, fillcolor="rgba(255, 23, 68, 0.05)", line_width=0, layer="below")
+    fig.add_hrect(y0=37.5, y1=75, fillcolor="rgba(255, 145, 0, 0.03)", line_width=0, layer="below")
+    fig.add_hrect(y0=75, y1=500, fillcolor="rgba(255, 23, 68, 0.03)", line_width=0, layer="below")
 
-    # 2. Historical Actual (Smooth Line)
+    # 2. Historical Actual (Smooth Line - Premium Theme Blue)
     fig.add_trace(go.Scatter(
         x=hist["Datetime"], y=hist["PM25"],
         name="อดีต (Actual)",
-        line=dict(color="#29b6f6", width=2.5, shape='spline', smoothing=0.8),
+        line=dict(color="#0f62fe", width=3, shape='spline', smoothing=0.8),
         mode="lines",
         hovertemplate="<b>%{x|%d %b %H:%M}</b><br>PM2.5 จริง: %{y:.1f} µg/m³<extra></extra>"
     ))
@@ -187,20 +194,20 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str, now: pd.Timestamp
             x=pd.concat([fore["Datetime"], fore["Datetime"].iloc[::-1]]),
             y=pd.concat([upper, lower.iloc[::-1]]),
             fill='toself',
-            fillcolor='rgba(255, 167, 38, 0.1)',
+            fillcolor='rgba(15, 98, 254, 0.05)',
             line=dict(color='rgba(255,255,255,0)', shape='spline', smoothing=0.8),
             hoverinfo="skip",
             showlegend=True,
             name="ช่วงความไม่แน่นอน"
         ))
 
-        # 4. Forecast Line (Smooth Area)
+        # 4. Forecast Line (Smooth Area - Vibrant Prediction Coral/Orange)
         fig.add_trace(go.Scatter(
             x=fore["Datetime"], y=fore["predicted"],
             name="พยากรณ์ (Forecast)",
             line=dict(color="#ff7043", width=3.5, shape='spline', smoothing=0.8),
             fill='tozeroy',
-            fillcolor='rgba(255, 112, 67, 0.08)',
+            fillcolor='rgba(255, 112, 67, 0.05)',
             mode="lines",
             hovertemplate="<b>%{x|%d %b %H:%M}</b><br>พยากรณ์: %{y:.1f} µg/m³<br><extra></extra>"
         ))
@@ -216,23 +223,23 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str, now: pd.Timestamp
             arrowhead=2,
             arrowsize=1,
             arrowwidth=2,
-            arrowcolor="#d500f9",
+            arrowcolor="#0f62fe",
             ax=0,
             ay=-40,
-            font=dict(color="#d500f9", size=12),
-            bgcolor="rgba(213, 0, 249, 0.1)",
-            bordercolor="#d500f9",
+            font=dict(color="#0f62fe", size=12, family="Prompt, sans-serif"),
+            bgcolor="rgba(15, 98, 254, 0.08)",
+            bordercolor="#0f62fe",
             borderwidth=1,
             borderpad=4,
-            opacity=0.9
+            opacity=0.95
         )
 
-    # 6. 'Now' Vertical Line (Using Shapes and Annotations directly to avoid library version conflicts)
+    # 6. 'Now' Vertical Line (Clean Slate Gray)
     fig.add_shape(
         type="line",
         x0=now, x1=now, y0=0, y1=1,
         xref="x", yref="paper",
-        line=dict(color="#90a4ae", width=2, dash="dash"),
+        line=dict(color="#64748b", width=2, dash="dash"),
     )
     fig.add_annotation(
         x=now, y=1,
@@ -240,15 +247,15 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str, now: pd.Timestamp
         text=" ปัจจุบัน",
         showarrow=False,
         xanchor="left", yanchor="top",
-        font=dict(color="#90a4ae", size=11)
+        font=dict(color="#64748b", size=11, family="Prompt, sans-serif")
     )
 
     # 7. Threshold Lines
-    fig.add_hline(y=37.5, line_dash="dot", line_color="#ffd600", line_width=1.5)
-    fig.add_annotation(x=0.01, y=37.5, xref="paper", yref="y", text="เริ่มมีผลกระทบ (37.5)", showarrow=False, font=dict(color="#ffd600", size=10), yanchor="bottom")
+    fig.add_hline(y=37.5, line_dash="dot", line_color="#eab308", line_width=1.5)
+    fig.add_annotation(x=0.01, y=37.5, xref="paper", yref="y", text="เริ่มมีผลกระทบ (37.5)", showarrow=False, font=dict(color="#eab308", size=10, family="Prompt, sans-serif"), yanchor="bottom")
     
-    fig.add_hline(y=75, line_dash="dot", line_color="#ff1744", line_width=1.5)
-    fig.add_annotation(x=0.01, y=75, xref="paper", yref="y", text="อันตราย (75)", showarrow=False, font=dict(color="#ff1744", size=10), yanchor="bottom")
+    fig.add_hline(y=75, line_dash="dot", line_color="#ef4444", line_width=1.5)
+    fig.add_annotation(x=0.01, y=75, xref="paper", yref="y", text="อันตราย (75)", showarrow=False, font=dict(color="#ef4444", size=10, family="Prompt, sans-serif"), yanchor="bottom")
 
     # 8. Clean Layout
     y_max = max(150, float(prov_data["PM25"].max()) * 1.1, float(fore["predicted"].max() if not fore.empty else 0) * 1.1)
@@ -256,24 +263,29 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str, now: pd.Timestamp
     fig.update_layout(
         title=dict(
             text=f"แนวโน้มฝุ่น PM2.5 ล่วงหน้า 7 วัน — <b>{province}</b>",
-            font_size=18
+            font=dict(size=16, family="Prompt, 'Plus Jakarta Sans', sans-serif", color="#1e293b")
         ),
         xaxis=dict(
             title="",
             showgrid=True,
-            gridcolor="rgba(0,0,0,0.05)",
+            gridcolor="#f1f5f9",
             gridwidth=1,
-            griddash="dot",
+            griddash="solid",
             showline=False,
-            zeroline=False
+            zeroline=False,
+            tickfont=dict(family="'Plus Jakarta Sans', 'Prompt', sans-serif", color="#64748b", size=11)
         ),
         yaxis=dict(
-            title="ปริมาณฝุ่น PM2.5 (µg/m³)",
+            title=dict(
+                text="ปริมาณฝุ่น PM2.5 (µg/m³)",
+                font=dict(family="Prompt, sans-serif", color="#64748b", size=12)
+            ),
             showgrid=True,
-            gridcolor="rgba(0,0,0,0.05)",
+            gridcolor="#f1f5f9",
             gridwidth=1,
             showline=False,
             zeroline=False,
+            tickfont=dict(family="'Plus Jakarta Sans', sans-serif", color="#64748b", size=11),
             range=[0, y_max]
         ),
         height=450,
@@ -286,11 +298,11 @@ def plot_7day_forecast(prov_data: pd.DataFrame, province: str, now: pd.Timestamp
             xanchor="right", 
             x=1,
             bgcolor="rgba(0,0,0,0)",
-            font=dict(size=12)
+            font=dict(size=12, family="Prompt, sans-serif", color="#475569")
         ),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#333333")
+        font=dict(color="#1e293b")
     )
 
     return fig
@@ -309,28 +321,40 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
     )
 
     st.markdown(
-        f"""
-        <div style='background:{info["color"]}1a;border-left:6px solid {info["color"]};
-                    padding:18px 22px;border-radius:10px;margin-bottom:20px'>
-          <div style='display:flex;justify-content:space-between;align-items:center'>
-            <div>
-              <h2 style='margin:0;color:{info["color"]}'>{info["emoji"]} {info["label"]}</h2>
-              <p style='margin:6px 0 0;color:#555;font-size:15px'>
-                PM2.5 สูงสุดพยากรณ์ 7 วันอันตราย:
-                <b style='color:{info["color"]}'>{pm25_max:.1f} µg/m³</b>
-                &nbsp;|&nbsp; {trend_txt}
-              </p>
-              <p style='margin:6px 0 0;color:#666;font-size:13px'>
-                💡 {info["advice"]}
-              </p>
+        clean_html(f"""
+        <div style="background: rgba(255, 255, 255, 0.85);
+                    border: 1px solid rgba(226, 232, 240, 0.8);
+                    border-left: 6px solid {info['color']};
+                    box-shadow: 0 10px 25px -5px rgba(148, 163, 184, 0.08), 0 4px 12px -2px rgba(148, 163, 184, 0.03);
+                    padding: 24px 28px;
+                    border-radius: 16px;
+                    margin-bottom: 28px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    backdrop-filter: blur(10px);
+                    font-family: 'Prompt', sans-serif;">
+          <div>
+            <h2 style="margin: 0; color: {info['color']}; font-family: 'Prompt', sans-serif; font-size: 20px; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+               {info['emoji']} {info['label']}
+            </h2>
+            <p style="margin: 10px 0 0; color: #475569; font-size: 14px; font-weight: 500; line-height: 1.5;">
+              ความเสี่ยงสูงสุดในอีก 7 วันข้างหน้า: 
+              <b style="color: {info['color']}; font-size: 16px; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; background: {info['color']}12; padding: 2px 8px; border-radius: 6px;">{pm25_max:.1f} µg/m³</b>
+              &nbsp;|&nbsp; <span style="font-weight: 600; color: #334155; font-size: 13px;">{trend_txt}</span>
+            </p>
+            <div style="margin: 12px 0 0; color: #64748b; font-size: 13px; display: flex; align-items: center; gap: 10px;">
+              <span style="background: {info['color']}15; padding: 3px 10px; border-radius: 6px; font-weight: 700; color: {info['color']}; font-size: 11px; text-transform: uppercase;">คำแนะนำ</span>
+              <span style="color: #475569; font-weight: 500;">{info['advice']}</span>
             </div>
-            <div style='font-size:56px;opacity:0.85'>{info["emoji"]}</div>
+          </div>
+          <div style="font-size: 52px; background: {info['color']}10; width: 84px; height: 84px; display: flex; align-items: center; justify-content: center; border-radius: 50%; opacity: 0.9; margin-left: 20px;">
+            {info['emoji']}
           </div>
         </div>
-        """,
+        """),
         unsafe_allow_html=True,
     )
-
 
     groups = [
         {
@@ -364,20 +388,27 @@ def render_alert_section(pm25_max: float, province: str, pm25_trend: float = 0.0
 
     cols = st.columns(3)
     for col, g in zip(cols, groups):
-        border = "#ff1744" if g["alert"] else "#00e676"
-        status = "⚠️ แจ้งเตือน" if g["alert"] else "✅ ปกติ"
+        border = "#ef4444" if g["alert"] else "#10b981"
+        status = "⚠️ แจ้งเตือนระดับสูง" if g["alert"] else "✅ ปกติและปลอดภัย"
         li = "".join(
-            f"<li style='margin:3px 0;color:#555;font-size:12px'>{a}</li>"
+            f"<li style='margin: 8px 0; color: #475569; font-size: 13px; line-height: 1.5; list-style-type: none; display: flex; align-items: flex-start; gap: 8px; font-weight: 500;'>"
+            f"<span style='color: {border}; font-size: 10px; margin-top: 1px;'>◆</span><span>{a}</span></li>"
             for a in g["actions"]
         )
         with col:
             st.markdown(
-                f"""<div style='background:{border}12;border:1px solid {border}44;
-                         padding:16px;border-radius:10px;min-height:175px'>
-                  <span style='color:{border};font-size:12px;font-weight:bold'>{status}</span><br>
-                  <b style='font-size:14px;color:#333'>{g["title"]}</b>
-                  <ul style='padding-left:16px;margin:8px 0 0'>{li}</ul>
-                </div>""",
+                clean_html(f"""
+                <div class="premium-card" style="border-top: 4px solid {border}; min-height: 200px; display: flex; flex-direction: column; justify-content: flex-start;">
+                  <div style="margin-bottom: 12px;">
+                    <span style="background: {border}12; color: {border}; font-size: 10px; font-weight: 800;
+                                 padding: 4px 12px; border-radius: 9999px; display: inline-block; letter-spacing: 0.5px;">{status}</span>
+                  </div>
+                  <b style="font-size: 15px; color: #1e293b; font-family: 'Prompt', sans-serif; font-weight: 700; margin-bottom: 6px; display: block;">{g["title"]}</b>
+                  <ul style="padding: 0; margin: 6px 0 0; font-family: 'Prompt', sans-serif;">
+                    {li}
+                  </ul>
+                </div>
+                """),
                 unsafe_allow_html=True,
             )
 
@@ -462,19 +493,25 @@ def plot_hotspot_priority_map(
     fig.add_trace(go.Scattermapbox(
         lat=[cx], lon=[cy],
         mode="markers+text",
-        marker=dict(size=14, color="#1976d2"),
+        marker=dict(size=14, color="#0f62fe"),
         text=[f"📍 {province}"],
         textposition="bottom right",
-        textfont=dict(color="#333", size=13),
+        textfont=dict(color="#1e293b", size=13, family="Prompt, sans-serif"),
         name=province,
     ))
 
     fig.update_layout(
         height=540,
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#333333"),
-        legend=dict(orientation="h", y=-0.06),
-        coloraxis_colorbar=dict(title="Priority", thickness=12),
+        font=dict(color="#1e293b", family="Prompt, sans-serif"),
+        legend=dict(orientation="h", y=-0.06, font=dict(family="Prompt, sans-serif")),
+        coloraxis_colorbar=dict(
+            title=dict(
+                text="Priority",
+                font=dict(family="Prompt, sans-serif")
+            ),
+            thickness=12
+        ),
     )
     return fig
 
@@ -550,7 +587,7 @@ def plot_shap_waterfall(model, X_latest: pd.DataFrame,
         textposition="outside",
         hovertemplate="%{y}<br>SHAP: %{x:+.2f} µg/m³<extra></extra>",
     ))
-    fig.add_vline(x=0, line_color="#607d8b", line_width=1.5)
+    fig.add_vline(x=0, line_color="#94a3b8", line_width=1.5)
 
     fig.update_layout(
         title=dict(
@@ -558,13 +595,22 @@ def plot_shap_waterfall(model, X_latest: pd.DataFrame,
                 f"SHAP Waterfall — โมเดลพยากรณ์ <b>{final_pred:.1f} µg/m³</b>"
                 f"<br><sup>Base = {base_val:.1f} | แดง = เพิ่มฝุ่น | เขียว = ลดฝุ่น</sup>"
             ),
-            font_size=14,
+            font=dict(size=14, family="Prompt, sans-serif", color="#1e293b"),
         ),
-        xaxis_title="SHAP Value (µg/m³)",
+        xaxis=dict(
+            title=dict(
+                text="SHAP Value (µg/m³)",
+                font=dict(family="Prompt, sans-serif", color="#64748b", size=12)
+            ),
+            tickfont=dict(family="Inter, sans-serif", color="#64748b")
+        ),
+        yaxis=dict(
+            autorange="reversed",
+            tickfont=dict(family="Prompt, sans-serif", color="#1e293b", size=11)
+        ),
         height=480,
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#333333"),
-        yaxis=dict(autorange="reversed"),
+        font=dict(color="#1e293b"),
         margin=dict(l=240, r=60),
     )
     return fig
@@ -582,13 +628,18 @@ def plot_feature_importance(model, feature_names: list) -> go.Figure:
     )
     fig = px.bar(
         imp, x="importance", y="display", orientation="h",
-        color="importance", color_continuous_scale="plasma",
+        color="importance", color_continuous_scale=["#93c5fd", "#0f62fe"],
         labels={"importance": "Importance (Gain)", "display": "Feature"},
         title="📊 Global Feature Importance — Top 20 (XGBoost Gain)",
     )
     fig.update_layout(
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#333333"), height=520,
+        font=dict(color="#1e293b", family="Prompt, sans-serif"), height=520,
+        title=dict(
+            font=dict(size=14, color="#1e293b", family="Prompt, sans-serif")
+        ),
+        xaxis=dict(tickfont=dict(family="Inter, sans-serif", color="#64748b")),
+        yaxis=dict(tickfont=dict(family="Prompt, sans-serif", color="#1e293b", size=11)),
         showlegend=False, coloraxis_showscale=False,
     )
     return fig
@@ -665,22 +716,31 @@ def render_province_overview(all_data: pd.DataFrame, now: pd.Timestamp):
         info = pm25_level_info(pred_max)
         
         with cols[i % 4]:
-            # Use session state to handle province change on button click
+            st.markdown(
+                clean_html(f"""
+                <div class="premium-card" style="border-top: 4px solid {info['color']}; text-align: center; margin-bottom: 12px; min-height: 200px; padding: 20px 16px; backdrop-filter: blur(10px); background: rgba(255,255,255,0.85);">
+                  <h4 style="margin: 0 0 4px; color: #1e293b; font-size: 16px; font-weight: 750; font-family: 'Prompt', sans-serif;">📍 {prov}</h4>
+                  <div style="font-size: 30px; margin: 8px 0; line-height: 1;">{info["emoji"]}</div>
+                  <div style="font-size: 12px; color: #64748b; margin-bottom: 6px; font-family: 'Prompt', sans-serif;">
+                    ปัจจุบัน: <b style="font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; color: #334155;">{curr_val:.1f}</b> µg/m³
+                  </div>
+                  <div style="font-size: 13px; color: #475569; font-weight: 600; margin-bottom: 8px; font-family: 'Prompt', sans-serif;">
+                    พยากรณ์สูงสุด: <span style="font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; color: {info['color']}; font-size: 15px;">{pred_max:.1f}</span>
+                  </div>
+                  <div style="font-size: 10px; color: {info['color']}; font-weight: 800; background: {info['color']}12; padding: 3px 10px; border-radius: 9999px; display: inline-block; font-family: 'Prompt', sans-serif; border: 1px solid {info['color']}20;">
+                    {info["label"]}
+                  </div>
+                </div>
+                """),
+                unsafe_allow_html=True,
+            )
+            
+            # Select province button styled cleanly under the card
             if st.button(
-                f"📍 {prov}\n{pred_max:.1f} µg/m³",
+                f"เลือก {prov}",
                 key=f"btn_{prov}",
                 use_container_width=True,
                 help=f"ดูรายละเอียดจังหวัด {prov}"
             ):
                 st.session_state["selected_province"] = prov
                 st.rerun()
-
-            st.markdown(
-                f"""<div style='background:{info["color"]}1a;border:1px solid {info["color"]}44;
-                         padding:12px;border-radius:10px;text-align:center;margin-bottom:10px'>
-                  <div style='font-size:12px;color:#666'>ปัจจุบัน: {curr_val:.1f}</div>
-                  <div style='font-size:24px'>{info["emoji"]}</div>
-                  <div style='font-size:11px;color:{info["color"]};font-weight:bold'>{info["label"]}</div>
-                </div>""",
-                unsafe_allow_html=True,
-            )

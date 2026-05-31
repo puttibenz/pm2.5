@@ -36,17 +36,7 @@ def _get_with_retry(
             time.sleep(wait)
 
 # ── config ────────────────────────────────────────────────────
-# พิกัดเดียวกับ src/data_collection/fetch_open_meteo.py
-NORTHERN_CITIES = {
-    "Chiang Mai"  : {"lat": 18.7883, "lon": 98.9853},
-    "Chiang Rai"  : {"lat": 19.9105, "lon": 99.8253},
-    "Mae Hong Son": {"lat": 19.3003, "lon": 97.9654},
-    "Lamphun"     : {"lat": 18.5745, "lon": 99.0087},
-    "Lampang"     : {"lat": 18.2888, "lon": 99.4930},
-    "Phayao"      : {"lat": 19.1666, "lon": 99.9022},
-    "Phrae"       : {"lat": 18.1446, "lon": 100.1403},
-    "Nan"         : {"lat": 18.7756, "lon": 100.7730},
-}
+from config import PROVINCE_COORDS as NORTHERN_CITIES, PROVINCES as TARGET_PROVINCES
 
 FIRMS_API_KEY = os.getenv("MAP_KEY")  
 
@@ -59,10 +49,6 @@ PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 SHP_PATH = REPO_ROOT / "notebooks" / "gadm_thailand" / "gadm41_THA_1.shp"
 
-TARGET_PROVINCES = [
-    "Chiang Mai", "Chiang Rai", "Lampang", "Lamphun",
-    "Mae Hong Son", "Nan", "Phayao", "Phrae",
-]
 
 TODAY = datetime.utcnow().date()
 YESTERDAY = TODAY - timedelta(days=1)
@@ -108,7 +94,7 @@ def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame
     """ดึง PM2.5 จาก air quality endpoint (ย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน)"""
 
     start = (TODAY - timedelta(days=10)).isoformat()
-    end = (TODAY + timedelta(days=7)).isoformat()
+    end = (TODAY + timedelta(days=3)).isoformat()
 
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
@@ -280,7 +266,7 @@ def append_to_master(new_df: pd.DataFrame, path: Path, date_col: str):
         combined = new_df
 
     combined.to_csv(path, index=False)
-    print(f"  Saved → {path.name} ({len(combined)} rows total)")
+    print(f"  Saved -> {path.name} ({len(combined)} rows total)")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -306,7 +292,7 @@ if __name__ == "__main__":
         # บันทึก raw hotspots สำหรับแผนที่ใน Streamlit (overwrite ทุกวัน)
         hotspot_path = PROCESSED_DATA_DIR / "firms_recent_hotspots.csv"
         firms_raw.to_csv(hotspot_path, index=False)
-        print(f"  Saved → firms_recent_hotspots.csv  ({len(firms_raw):,} rows)")
+        print(f"  Saved -> firms_recent_hotspots.csv  ({len(firms_raw):,} rows)")
 
         # aggregate สำหรับ predict.py ใช้ต่อ
         firms_df = aggregate_firms_daily(firms_raw)

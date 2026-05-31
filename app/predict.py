@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timedelta
-from config import IS_HAZE_MONTHS
+from config import IS_HAZE_MONTHS, PROVINCES, PROVINCE_LABELS, PROVINCE_MEAN_MAP
 
 # ── Config ────────────────────────────────────────────────────
 
@@ -17,38 +17,17 @@ DATA_DIR     = REPO_ROOT / 'data'
 OUTPUT_DIR   = REPO_ROOT / 'predictions'
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-PROVINCES = [
-    'Chiang Mai', 'Chiang Rai', 'Lampang', 'Lamphun',
-    'Mae Hong Son', 'Nan', 'Phayao', 'Phrae'
-]
-
 # ── Feature constants ─────────────────────────────────────────
 LAG_HOURS = [1, 2, 3, 6, 12, 24, 48, 72]
 FIRE_LAGS = [24, 48, 72]
 WINDOWS   = [3, 6, 12, 24, 48, 168]
 
-PROVINCE_LABELS = {
-    'Chiang Mai': 0, 'Chiang Rai': 1, 'Lampang': 2, 'Lamphun': 3,
-    'Mae Hong Son': 4, 'Nan': 5, 'Phayao': 6, 'Phrae': 7,
-}
-
-PROVINCE_MEAN_MAP = {
-    'Chiang Mai':   21.587774223034735,
-    'Chiang Rai':   19.978260207190736,
-    'Lampang':      18.251279707495428,
-    'Lamphun':      17.79868982327849,
-    'Mae Hong Son': 12.911837294332724,
-    'Nan':          18.212416209628277,
-    'Phayao':       17.143692870201097,
-    'Phrae':        17.761144119439365,
-}
-
 def load_artifacts():
     model = joblib.load(ARTIFACT_DIR / 'xgboost_pm25.pkl')
-    scaler = joblib.load(ARTIFACT_DIR / 'scaler.pkl')
+    # Scaler is not used as model was trained on raw data
     with open(ARTIFACT_DIR / 'feature_list.json', encoding='utf-8') as f:
         feature_list = json.load(f)
-    return model, scaler, feature_list
+    return model, feature_list
 
 def load_data():
     """
@@ -63,6 +42,10 @@ def load_data():
     # เอาแค่ 10 วันล่าสุดเพื่อทำ Lag/Rolling
     cutoff = pd.Timestamp.now(tz='Asia/Bangkok').replace(tzinfo=None) - pd.Timedelta(days=10)
     hist_df = hist_df[hist_df['Datetime'] >= cutoff].copy()
+
+    # เคลียร์ค่า PM2.5 ในอนาคต (พยากรณ์ล่วงหน้าจาก API) เพื่อให้โมเดลทำนายแบบ Recursive ตั้งแต่เวลาปัจจุบันเป็นต้นไป
+    now_th = pd.Timestamp.now(tz='Asia/Bangkok').replace(tzinfo=None).floor('h')
+    hist_df.loc[hist_df['Datetime'] >= now_th, 'PM25'] = np.nan
 
     # 2. โหลดข้อมูลพยากรณ์อากาศ (ที่สร้างใหม่)
     forecast_path = DATA_DIR / "raw" / "openmeteo_forecast_7d.csv"
@@ -107,117 +90,152 @@ def load_data():
 
 def build_features_single_row(df_prov, current_idx, feature_list):
     """
-    สร้าง Features สำหรับแถวเดียว (Recursive)
+    สร้าง Features สำหรับแถวเดียว (Recursive) - เวอร์ชันปรับปรุงความเร็ว
     """
-    # ดึงข้อมูลมาเฉพาะส่วนที่จำเป็นเพื่อความเร็ว
-    # WINDOWS สูงสุดคือ 168 ดังนั้นต้องย้อนหลังอย่างน้อย 168
-    p = df_prov.iloc[max(0, current_idx-170):current_idx+1].copy()
-    idx = len(p) - 1
+    # ดึงข้อมูลเฉพาะส่วนที่จำเป็น
+    start = max(0, current_idx - 170)
+    window = df_prov.iloc[start:current_idx + 1]
+    idx = len(window) - 1
+    row = window.iloc[idx]
+    dt = row['Datetime']
+
+    features = {}
     
-    # Time Features
-    dt = p.iloc[idx]['Datetime']
-    p.at[p.index[idx], 'year']           = dt.year
-    p.at[p.index[idx], 'month']          = dt.month
-    p.at[p.index[idx], 'day']            = dt.day
-    p.at[p.index[idx], 'hour']           = dt.hour
-    p.at[p.index[idx], 'dayofyear']      = dt.dayofyear
-    p.at[p.index[idx], 'is_haze_season'] = 1 if dt.month in IS_HAZE_MONTHS else 0
-    p.at[p.index[idx], 'hour_sin']       = np.sin(2 * np.pi * dt.hour  / 24)
-    p.at[p.index[idx], 'hour_cos']       = np.cos(2 * np.pi * dt.hour  / 24)
-    p.at[p.index[idx], 'month_sin']      = np.sin(2 * np.pi * dt.month / 12)
-    p.at[p.index[idx], 'month_cos']      = np.cos(2 * np.pi * dt.month / 12)
-    p.at[p.index[idx], 'day_sin']        = np.sin(2 * np.pi * dt.day   / 365)
-    p.at[p.index[idx], 'day_cos']        = np.cos(2 * np.pi * dt.day   / 365)
-    
-    wd = p.iloc[idx]['wind_direction_10m']
-    p.at[p.index[idx], 'wind_dir_sin']   = np.sin(np.radians(wd))
-    p.at[p.index[idx], 'wind_dir_cos']   = np.cos(np.radians(wd))
+    # Base features from row
+    base_cols = [
+        'temperature_2m', 'relative_humidity_2m', 'precipitation',
+        'surface_pressure', 'wind_speed_10m', 'wind_direction_10m',
+        'hotspot_count', 'frp_sum', 'frp_mean'
+    ]
+    for col in base_cols:
+        if col in row:
+            features[col] = row[col]
+
+    # Time features
+    features['year']           = dt.year
+    features['month']          = dt.month
+    features['day']            = dt.day
+    features['hour']           = dt.hour
+    features['dayofyear']      = dt.dayofyear
+    features['is_haze_season'] = 1 if dt.month in IS_HAZE_MONTHS else 0
+    features['hour_sin']       = np.sin(2 * np.pi * dt.hour / 24)
+    features['hour_cos']       = np.cos(2 * np.pi * dt.hour / 24)
+    features['month_sin']      = np.sin(2 * np.pi * dt.month / 12)
+    features['month_cos']      = np.cos(2 * np.pi * dt.month / 12)
+    features['day_sin']        = np.sin(2 * np.pi * dt.day / 31)
+    features['day_cos']        = np.cos(2 * np.pi * dt.day / 31)
+
+    # Wind
+    wd = row['wind_direction_10m']
+    features['wind_dir_sin'] = np.sin(np.radians(wd))
+    features['wind_dir_cos'] = np.cos(np.radians(wd))
 
     # PM2.5 Lag
+    pm25_series = window['PM25'].values
     for lag in LAG_HOURS:
-        if idx >= lag:
-            p.at[p.index[idx], f'pm25_lag_{lag}h'] = p.iloc[idx-lag]['PM25']
-            
+        features[f'pm25_lag_{lag}h'] = pm25_series[idx - lag] if idx >= lag else 0
+
     # Fire Lag
+    hotspot_series = window['hotspot_count'].values
+    frp_series = window['frp_sum'].values
     for lag in FIRE_LAGS:
         if idx >= lag:
-            p.at[p.index[idx], f'hotspot_lag_{lag}h'] = p.iloc[idx-lag]['hotspot_count']
-            p.at[p.index[idx], f'frp_sum_lag_{lag}h'] = p.iloc[idx-lag]['frp_sum']
+            features[f'hotspot_lag_{lag}h'] = hotspot_series[idx - lag]
+            features[f'frp_sum_lag_{lag}h'] = frp_series[idx - lag]
+            features[f'hotspot_log_lag_{lag}h'] = np.log1p(hotspot_series[idx - lag])
+        else:
+            features[f'hotspot_lag_{lag}h'] = 0
+            features[f'frp_sum_lag_{lag}h'] = 0
+            features[f'hotspot_log_lag_{lag}h'] = 0
 
     # PM2.5 Rolling
     for w in WINDOWS:
-        if idx >= 1:
-            window_data = p['PM25'].iloc[max(0, idx-w):idx]
-            p.at[p.index[idx], f'pm25_roll_mean_{w}h'] = window_data.mean()
-            p.at[p.index[idx], f'pm25_roll_std_{w}h']  = window_data.std()
-            p.at[p.index[idx], f'pm25_roll_max_{w}h']  = window_data.max()
+        slice_ = pm25_series[max(0, idx - w):idx]
+        if len(slice_) > 0:
+            features[f'pm25_roll_mean_{w}h'] = slice_.mean()
+            features[f'pm25_roll_std_{w}h']  = slice_.std() if len(slice_) > 1 else 0
+            features[f'pm25_roll_max_{w}h']  = slice_.max()
+        else:
+            features[f'pm25_roll_mean_{w}h'] = 0
+            features[f'pm25_roll_std_{w}h']  = 0
+            features[f'pm25_roll_max_{w}h']  = 0
 
     # Fire Rolling
     for w in [24, 48, 168]:
-        if idx >= 1:
-            window_data = p['hotspot_count'].iloc[max(0, idx-w):idx]
-            p.at[p.index[idx], f'hotspot_roll_sum_{w}h'] = window_data.sum()
-            window_frp = p['frp_sum'].iloc[max(0, idx-w):idx]
-            p.at[p.index[idx], f'frp_roll_sum_{w}h']     = window_frp.sum()
+        slice_h = hotspot_series[max(0, idx - w):idx]
+        slice_f = frp_series[max(0, idx - w):idx]
+        features[f'hotspot_roll_sum_{w}h'] = slice_h.sum() if len(slice_h) > 0 else 0
+        features[f'frp_roll_sum_{w}h']     = slice_f.sum() if len(slice_f) > 0 else 0
 
     # Log/Interaction
-    p.at[p.index[idx], 'hotspot_log']       = np.log1p(p.iloc[idx]['hotspot_count'])
-    p.at[p.index[idx], 'frp_sum_log']       = np.log1p(p.iloc[idx]['frp_sum'])
-    p.at[p.index[idx], 'frp_mean_log']      = np.log1p(p.iloc[idx]['frp_mean'])
-    p.at[p.index[idx], 'precipitation_log'] = np.log1p(p.iloc[idx]['precipitation'])
+    features['hotspot_log']       = np.log1p(row['hotspot_count'])
+    features['frp_sum_log']       = np.log1p(row['frp_sum'])
+    features['frp_mean_log']      = np.log1p(row['frp_mean'])
+    features['precipitation_log'] = np.log1p(row['precipitation'])
     
-    for lag in FIRE_LAGS:
-        val = p.at[p.index[idx], f'hotspot_lag_{lag}h'] if f'hotspot_lag_{lag}h' in p.columns else 0
-        p.at[p.index[idx], f'hotspot_log_lag_{lag}h'] = np.log1p(val)
+    features['pm25_delta_1h']      = pm25_series[idx-1] - pm25_series[idx-2] if idx >= 2 else 0
+    features['pm25_delta_24h']     = pm25_series[idx-1] - pm25_series[idx-25] if idx >= 25 else 0
+    features['humidity_delta_1h']  = row['relative_humidity_2m'] - window.iloc[idx-1]['relative_humidity_2m'] if idx >= 1 else 0
+    features['humidity_delta_24h'] = row['relative_humidity_2m'] - window.iloc[idx-24]['relative_humidity_2m'] if idx >= 24 else 0
+    
+    features['temp_x_humidity'] = row['temperature_2m'] * row['relative_humidity_2m'] / 100
+    features['hotspot_x_haze']  = features['hotspot_log'] * features['is_haze_season']
+    features['frp_x_haze']      = features['frp_sum_log'] * features['is_haze_season']
+    features['wind_x_hotspot']  = row['wind_speed_10m'] * features['hotspot_log']
 
-    p.at[p.index[idx], 'pm25_delta_1h']      = p.iloc[idx-1]['PM25'] - p.iloc[idx-2]['PM25'] if idx >= 2 else 0
-    p.at[p.index[idx], 'pm25_delta_24h']     = p.iloc[idx-1]['PM25'] - p.iloc[idx-25]['PM25'] if idx >= 25 else 0
-    p.at[p.index[idx], 'humidity_delta_1h']  = p.iloc[idx]['relative_humidity_2m'] - p.iloc[idx-1]['relative_humidity_2m'] if idx >= 1 else 0
-    p.at[p.index[idx], 'humidity_delta_24h'] = p.iloc[idx]['relative_humidity_2m'] - p.iloc[idx-24]['relative_humidity_2m'] if idx >= 24 else 0
+    features['province_label']      = PROVINCE_LABELS.get(row['Province'], -1)
+    features['province_target_enc'] = PROVINCE_MEAN_MAP.get(row['Province'], 0)
     
-    p.at[p.index[idx], 'temp_x_humidity'] = p.iloc[idx]['temperature_2m'] * p.iloc[idx]['relative_humidity_2m'] / 100
-    p.at[p.index[idx], 'hotspot_x_haze']  = p.at[p.index[idx], 'hotspot_log'] * p.at[p.index[idx], 'is_haze_season']
-    p.at[p.index[idx], 'frp_x_haze']      = p.at[p.index[idx], 'frp_sum_log'] * p.at[p.index[idx], 'is_haze_season']
-    p.at[p.index[idx], 'wind_x_hotspot']  = p.iloc[idx]['wind_speed_10m'] * p.at[p.index[idx], 'hotspot_log']
-
-    p.at[p.index[idx], 'province_label']      = PROVINCE_LABELS.get(p.iloc[idx]['Province'], -1)
-    p.at[p.index[idx], 'province_target_enc'] = PROVINCE_MEAN_MAP.get(p.iloc[idx]['Province'], 0)
-    
-    return p.iloc[idx][feature_list].fillna(0).to_frame().T.astype(float)
+    # แปลงเป็น DataFrame และเรียงคอลัมน์ตาม feature_list
+    X = pd.DataFrame([features])
+    return X[feature_list].fillna(0).astype(float)
 
 def run_recursive_predict(df, model, feature_list):
     """
-    ทำนายทีละชั่วโมงแบบ Recursive
+    ทำนายทีละชั่วโมงแบบ Recursive สำหรับทุกจังหวัด
     """
     results_list = []
+    df_final_list = []
     
+    now = pd.Timestamp.now(tz='Asia/Bangkok').tz_localize(None).floor('h')
+
     for prov in PROVINCES:
         print(f"  Predicting for {prov}...")
         p = df[df['Province'] == prov].copy().sort_values('Datetime').reset_index(drop=True)
+        p['is_predicted'] = False
+        p['predicted'] = p['PM25']
+
+        # หาจุดเริ่มต้นของ Forecast 
+        actual_indices = p[p['PM25'].notna()].index
+        if len(actual_indices) == 0:
+            last_actual_idx = -1
+        else:
+            last_actual_idx = int(actual_indices.max())
         
-        # หาจุดเริ่มต้นของ Forecast (แถวที่ PM25 เป็น NaN)
-        # หรือถ้ามีค่า PM25 ล่าสุดเมื่อไหร่ ให้เริ่มจากตรงนั้น
-        last_actual_idx = p[p['PM25'].notna()].index.max()
-        
-        # เราจะทำนายตั้งแต่วินาทีถัดไปจากค่าจริงล่าสุด
         for i in range(last_actual_idx + 1, len(p)):
-            # 1. สร้าง Features สำหรับแถว i
+            # 1. สร้าง Features
             X = build_features_single_row(p, i, feature_list)
             
-            # 2. Predict
+            # 2. Predict (Raw data, no scaler)
             pred = model.predict(X)[0]
             
-            # 3. ใส่ผลลัพธ์กลับลงไปใน PM25 เพื่อใช้ใน Loop ถัดไป
+            # 3. อัปเดตค่าเพื่อใช้ใน Loop ถัดไป
             p.at[i, 'PM25'] = pred
+            p.at[i, 'predicted'] = pred
+            p.at[i, 'is_predicted'] = True
             
-            # เก็บผลลัพธ์เฉพาะส่วนที่เป็นพยากรณ์
+            # อัปเดต Features อื่นๆ ลงใน p สำหรับ SHAP และ Loop ถัดไป (ถ้าจำเป็น)
+            for col in X.columns:
+                p.at[i, col] = X.iloc[0][col]
+            
             results_list.append({
                 'Province': prov,
                 'Datetime': p.at[i, 'Datetime'],
                 'Predicted_PM25': pred
             })
+        df_final_list.append(p)
             
-    return pd.DataFrame(results_list)
+    return pd.DataFrame(results_list), pd.concat(df_final_list, ignore_index=True)
 
 def save_predictions(results, df_final, feature_list):
     # บันทึกเป็น CSV สำหรับแสดงผลประวัติพยากรณ์
@@ -228,19 +246,20 @@ def save_predictions(results, df_final, feature_list):
     # บันทึกไฟล์สำหรับ Dashboard (รวมประวัติย้อนหลัง + พยากรณ์)
     dashboard_path = DATA_DIR / "processed" / "dashboard_data.csv"
     
-    # BUG-01: แยก Predicted ออกจาก PM25 จริง
+    # แยก Predicted ออกจาก PM25 จริง
     results_map = results.set_index(['Province', 'Datetime'])['Predicted_PM25']
     df_final['predicted'] = df_final.apply(
         lambda r: results_map.get((r['Province'], r['Datetime']), r['PM25']),
         axis=1
     )
+    
     # สำหรับแถวที่เป็นพยากรณ์ ให้ PM25 เป็น NaN (เพื่อให้กราฟ Actual ตัดจบที่ปัจจุบัน)
-    forecast_mask = df_final.set_index(['Province', 'Datetime']).index.isin(results_map.index)
+    forecast_mask = df_final['is_predicted'] == True
     df_final.loc[forecast_mask, 'PM25'] = np.nan
 
-    # BUG-03: กรองคอลัมน์ที่จำเป็นสำหรับ Dashboard และ SHAP
+    # กรองคอลัมน์ที่จำเป็นสำหรับ Dashboard และ SHAP
     base_cols = [
-        'Datetime', 'Province', 'PM25', 'predicted',
+        'Datetime', 'Province', 'PM25', 'predicted', 'is_predicted',
         'temperature_2m', 'relative_humidity_2m', 'precipitation',
         'surface_pressure', 'wind_speed_10m', 'wind_direction_10m',
         'hotspot_count', 'frp_sum', 'frp_mean',
@@ -251,7 +270,8 @@ def save_predictions(results, df_final, feature_list):
     save_cols = [c for c in save_cols if c in df_final.columns]
     
     # กรองเอาแค่ 14 วัน (ย้อนหลัง 7 + พยากรณ์ 7)
-    cutoff = datetime.now() - timedelta(days=14)
+    max_dt = df_final['Datetime'].max()
+    cutoff = max_dt - timedelta(days=14)
     dashboard_df = df_final[df_final['Datetime'] >= cutoff].copy()
     
     dashboard_df[save_cols].to_csv(dashboard_path, index=False)
@@ -273,18 +293,16 @@ def compute_shap_values(model, df_final, feature_list):
     shap_records = []
 
     for prov in PROVINCES:
-        p = df_final[df_final['Province'] == prov].sort_values('Datetime')
+        p = df_final[df_final['Province'] == prov].sort_values('Datetime').reset_index(drop=True)
         if p.empty: continue
         
-        # ค้นหาแถวสุดท้ายที่มีค่าพยากรณ์ (predicted) ล่าสุด
-        # ปกติคือแถวสุดท้ายของ DataFrame
-        latest_row = p.iloc[[-1]]
-        X = latest_row[feature_list].fillna(0).astype(float)
+        # Build features for the latest row using build_features_single_row
+        X = build_features_single_row(p, len(p) - 1, feature_list)
         
         # คำนวณ SHAP
         shap_values = explainer.shap_values(X)
         base_value  = float(explainer.expected_value)
-        pred_val    = float(latest_row['predicted'].iloc[0])
+        pred_val    = float(p['predicted'].iloc[-1])
         
         sv = shap_values[0]
         for i, feat in enumerate(feature_list):
@@ -305,32 +323,11 @@ def compute_shap_values(model, df_final, feature_list):
 if __name__ == "__main__":
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Running recursive predict pipeline...")
     
-    model, scaler, feature_list = load_artifacts()
+    model, feature_list = load_artifacts()
     df = load_data()
     
     print("\nStarting Recursive Prediction (7 Days)...")
-    # เราต้องการ Dataframe p ที่อัปเดตค่า PM25 แล้วกลับมาด้วย
-    results_list = []
-    df_final_list = []
-    
-    for prov in PROVINCES:
-        print(f"  Predicting for {prov}...")
-        p = df[df['Province'] == prov].copy().sort_values('Datetime').reset_index(drop=True)
-        last_actual_idx = p[p['PM25'].notna()].index.max()
-        
-        for i in range(last_actual_idx + 1, len(p)):
-            X = build_features_single_row(p, i, feature_list)
-            pred = model.predict(X)[0]
-            p.at[i, 'PM25'] = pred
-            results_list.append({
-                'Province': prov,
-                'Datetime': p.at[i, 'Datetime'],
-                'Predicted_PM25': pred
-            })
-        df_final_list.append(p)
-            
-    results = pd.DataFrame(results_list)
-    df_final = pd.concat(df_final_list, ignore_index=True)
+    results, df_final = run_recursive_predict(df, model, feature_list)
     
     save_predictions(results, df_final, feature_list)
     compute_shap_values(model, df_final, feature_list)

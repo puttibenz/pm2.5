@@ -50,12 +50,21 @@ jobs:
       - name: Run predictions
         run: python app/predict.py
 
-      # 6. Commit และ push ไฟล์ CSV ใหม่กลับเข้า repo
+      # 6. ส่ง Line notification และรันประเมินผลประสิทธิภาพรายวัน
+      - name: Send notifications
+        env:
+          LINE_NOTIFY_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}
+        run: python app/notify.py
+
+      - name: Evaluate yesterday predictions
+        run: python app/evaluate_daily.py
+
+      # 7. Commit และ push ไฟล์ CSV ใหม่กลับเข้า repo
       - name: Commit updated data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/ predictions/
-          git diff --cached --quiet || git commit -m "data: auto-fetch $(date +%Y-%m-%d)"
+          git diff --cached --quiet || git commit -m "data/metrics: auto-fetch & evaluation $(date +%Y-%m-%d)"
           git push
       
