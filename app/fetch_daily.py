@@ -59,9 +59,6 @@ YESTERDAY = TODAY - timedelta(days=1)
 def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
     """ดึงข้อมูลรายชั่วโมงย้อนหลัง 10 วัน + ล่วงหน้า 7 วัน (forecast)"""
 
-    start = (TODAY - timedelta(days=10)).strftime("%Y-%m-%d")
-    end = (TODAY + timedelta(days=7)).strftime("%Y-%m-%d")
-
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
@@ -74,9 +71,8 @@ def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
             "wind_speed_10m",
             "wind_direction_10m",
         ]),
-        # ดึง air quality (PM2.5) จาก endpoint แยก
-        "start_date": start,
-        "end_date": end,
+        "past_days": 10,
+        "forecast_days": 7,
         "timezone": "Asia/Bangkok",
     }
 
@@ -91,18 +87,15 @@ def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
 
 
 def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
-    """ดึง PM2.5 จาก air quality endpoint (ย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน)"""
-
-    start = (TODAY - timedelta(days=10)).strftime("%Y-%m-%d")  # ← เพิ่ม strftime
-    end = (TODAY + timedelta(days=7)).strftime("%Y-%m-%d")     # ← ขยาย 3→7 วัน + strftime
+    """ดึง PM2.5 จาก air quality endpoint (ย้อนหลัง 10 วัน + ล่วงหน้า 7 วัน)"""
 
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
         "latitude": lat,
         "longitude": lon,
         "hourly": "pm2_5",
-        "start_date": start,
-        "end_date": end,
+        "past_days": 10,
+        "forecast_days": 7,
         "timezone": "Asia/Bangkok",
     }
 
