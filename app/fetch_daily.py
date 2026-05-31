@@ -93,8 +93,8 @@ def fetch_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
 def fetch_pm25_open_meteo(province: str, lat: float, lon: float) -> pd.DataFrame:
     """ดึง PM2.5 จาก air quality endpoint (ย้อนหลัง 10 วัน + ล่วงหน้า 3 วัน)"""
 
-    start = (TODAY - timedelta(days=10)).isoformat()
-    end = (TODAY + timedelta(days=3)).isoformat()
+    start = (TODAY - timedelta(days=10)).strftime("%Y-%m-%d")  # ← เพิ่ม strftime
+    end = (TODAY + timedelta(days=7)).strftime("%Y-%m-%d")     # ← ขยาย 3→7 วัน + strftime
 
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
