@@ -218,6 +218,7 @@ def run_recursive_predict(df, model, feature_list):
             
             # 2. Predict (Raw data, no scaler)
             pred = model.predict(X)[0]
+            pred = max(0.0, float(pred))  # ✓ ป้องกันค่าติดลบ
             
             # 3. อัปเดตค่าเพื่อใช้ใน Loop ถัดไป
             p.at[i, 'PM25'] = pred
